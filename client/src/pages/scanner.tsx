@@ -137,30 +137,38 @@ export default function ScannerPage() {
   }, [resetScanner, pauseScanner]);
 
   const processResponse = useCallback((data: any) => {
-    if (data.success === true || data.status === "SUCCESS") {
+    const st = (data.status || "").toLowerCase();
+
+    if (data.success === true || st === "success" || st === "ok") {
       setScanResult({
         status: "success",
-        name: data.name || "Attendee",
+        name: data.name || data.senderType || "Attendee",
         message: data.status || "Present",
       });
       setScanCount((c) => c + 1);
       playSuccessSound();
-    } else if (data.status === "ALREADY_SCANNED") {
+    } else if (st === "already_scanned" || st === "duplicate") {
       setScanResult({
         status: "already_scanned",
         message: data.message || "Already Scanned",
       });
       playErrorSound();
-    } else if (data.status === "INVALID" || data.success === false) {
+    } else if (data.error && /already/i.test(data.error)) {
+      setScanResult({
+        status: "already_scanned",
+        message: data.error || "Already Scanned",
+      });
+      playErrorSound();
+    } else if (st === "invalid" || data.success === false || data.error) {
       setScanResult({
         status: "invalid",
-        message: data.message || "Invalid QR Code",
+        message: data.message || data.error || "Invalid QR Code",
       });
       playErrorSound();
     } else {
       setScanResult({
         status: "error",
-        message: "Unexpected response",
+        message: data.message || "Unexpected response",
       });
       playErrorSound();
     }
