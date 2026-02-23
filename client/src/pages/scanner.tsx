@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Html5Qrcode, Html5QrcodeScannerState } from "html5-qrcode";
 
-const BASE_URL = import.meta.env.VITE_BASE_URL || "";
 
 type ScanStatus = "idle" | "scanning" | "processing" | "success" | "already_scanned" | "invalid" | "error" | "camera_error";
 
@@ -107,13 +106,11 @@ export default function ScannerPage() {
     pauseScanner();
     setScanResult({ status: "processing" });
 
-    const token = extractToken(decodedText);
-
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-      const response = await fetch(`${BASE_URL}/api/scan`, {
+      const response = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ qrData: decodedText }),
@@ -122,24 +119,11 @@ export default function ScannerPage() {
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        const controller2 = new AbortController();
-        const timeoutId2 = setTimeout(() => controller2.abort(), 5000);
-        const fallback = await fetch(`${BASE_URL}/scan/${encodeURIComponent(token)}`, {
-          method: "POST",
-          signal: controller2.signal,
-        });
-        clearTimeout(timeoutId2);
-        if (!fallback.ok) {
-          throw new Error(`Server error: ${fallback.status}`);
-        }
-        const data = await fallback.json();
-        if (!mountedRef.current) return;
-        processResponse(data);
-      } else {
-        const data = await response.json();
-        if (!mountedRef.current) return;
-        processResponse(data);
+        throw new Error(`Server error: ${response.status}`);
       }
+      const data = await response.json();
+      if (!mountedRef.current) return;
+      processResponse(data);
     } catch (err: any) {
       if (!mountedRef.current) return;
       const msg = err.name === "AbortError" ? "Request timed out" : "Network error";
