@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Html5Qrcode, Html5QrcodeScannerState } from "html5-qrcode";
 
-
 type ScanStatus = "idle" | "scanning" | "processing" | "success" | "already_scanned" | "invalid" | "error" | "camera_error";
 
 interface ScanResult {
@@ -9,9 +8,6 @@ interface ScanResult {
   name?: string;
   message?: string;
 }
-
-const SUCCESS_SOUND_FREQ = 880;
-const ERROR_SOUND_FREQ = 300;
 
 function playTone(frequency: number, duration: number, type: OscillatorType = "sine") {
   try {
@@ -22,7 +18,7 @@ function playTone(frequency: number, duration: number, type: OscillatorType = "s
     gain.connect(ctx.destination);
     osc.type = type;
     osc.frequency.value = frequency;
-    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.setValueAtTime(0.25, ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + duration);
     osc.start(ctx.currentTime);
     osc.stop(ctx.currentTime + duration);
@@ -30,25 +26,19 @@ function playTone(frequency: number, duration: number, type: OscillatorType = "s
 }
 
 function playSuccessSound() {
-  playTone(SUCCESS_SOUND_FREQ, 0.15);
-  setTimeout(() => playTone(1100, 0.2), 120);
+  playTone(660, 0.12);
+  setTimeout(() => playTone(880, 0.12), 100);
+  setTimeout(() => playTone(1100, 0.18), 200);
+}
+
+function playWarningSound() {
+  playTone(440, 0.15, "triangle");
+  setTimeout(() => playTone(380, 0.2, "triangle"), 140);
 }
 
 function playErrorSound() {
-  playTone(ERROR_SOUND_FREQ, 0.2, "square");
-  setTimeout(() => playTone(200, 0.3, "square"), 180);
-}
-
-function extractToken(qrData: string): string {
-  const trimmed = qrData.trim();
-  try {
-    const url = new URL(trimmed);
-    const pathMatch = url.pathname.match(/\/scan\/(.+)/);
-    if (pathMatch) return pathMatch[1].replace(/\/+$/, "");
-  } catch (_) {}
-  const pathMatch = trimmed.match(/\/scan\/([^\s?#]+)/);
-  if (pathMatch) return pathMatch[1].replace(/\/+$/, "");
-  return trimmed;
+  playTone(300, 0.15, "square");
+  setTimeout(() => playTone(220, 0.25, "square"), 150);
 }
 
 export default function ScannerPage() {
@@ -63,24 +53,18 @@ export default function ScannerPage() {
 
   const pauseScanner = useCallback(() => {
     try {
-      const scanner = scannerRef.current;
-      if (scanner) {
-        const state = scanner.getState();
-        if (state === Html5QrcodeScannerState.SCANNING) {
-          scanner.pause(true);
-        }
+      const s = scannerRef.current;
+      if (s && s.getState() === Html5QrcodeScannerState.SCANNING) {
+        s.pause(true);
       }
     } catch (_) {}
   }, []);
 
   const resumeScanner = useCallback(() => {
     try {
-      const scanner = scannerRef.current;
-      if (scanner) {
-        const state = scanner.getState();
-        if (state === Html5QrcodeScannerState.PAUSED) {
-          scanner.resume();
-        }
+      const s = scannerRef.current;
+      if (s && s.getState() === Html5QrcodeScannerState.PAUSED) {
+        s.resume();
       }
     } catch (_) {}
   }, []);
@@ -91,6 +75,51 @@ export default function ScannerPage() {
     resumeScanner();
     setScanResult({ status: "scanning" });
   }, [resumeScanner]);
+
+  const processResponse = useCallback((data: any) => {
+    const st = (data.status || "").toLowerCase();
+    const errMsg = data.error || data.message || "";
+
+    if (data.success === true || st === "success" || st === "ok") {
+      setScanResult({
+        status: "success",
+        name: data.name || data.senderType || "Attendee",
+        message: "Attendance Marked",
+      });
+      setScanCount((c) => c + 1);
+      playSuccessSound();
+    } else if (st === "already_scanned" || st === "duplicate" || /already/i.test(errMsg)) {
+      setScanResult({
+        status: "already_scanned",
+        message: errMsg || "Already Scanned",
+      });
+      playWarningSound();
+    } else if (data.success === false && /unreachable|timeout|error/i.test(errMsg)) {
+      setScanResult({
+        status: "error",
+        message: errMsg || "Server error. Try again.",
+      });
+      playErrorSound();
+    } else if (st === "invalid" || /invalid/i.test(errMsg)) {
+      setScanResult({
+        status: "invalid",
+        message: errMsg || "Invalid QR Code",
+      });
+      playErrorSound();
+    } else if (data.error) {
+      setScanResult({
+        status: "error",
+        message: errMsg || "Something went wrong",
+      });
+      playErrorSound();
+    } else {
+      setScanResult({
+        status: "error",
+        message: errMsg || "Unexpected response",
+      });
+      playErrorSound();
+    }
+  }, []);
 
   const handleScan = useCallback(async (decodedText: string) => {
     if (isProcessingRef.current) return;
@@ -108,7 +137,7 @@ export default function ScannerPage() {
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
 
       const response = await fetch("/api/scan", {
         method: "POST",
@@ -119,60 +148,30 @@ export default function ScannerPage() {
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        throw new Error(`Server error: ${response.status}`);
+        const errorData = await response.json().catch(() => null);
+        if (errorData) {
+          processResponse(errorData);
+        } else {
+          throw new Error(`Server error: ${response.status}`);
+        }
+      } else {
+        const data = await response.json();
+        if (!mountedRef.current) return;
+        processResponse(data);
       }
-      const data = await response.json();
-      if (!mountedRef.current) return;
-      processResponse(data);
     } catch (err: any) {
       if (!mountedRef.current) return;
-      const msg = err.name === "AbortError" ? "Request timed out" : "Network error";
-      setScanResult({ status: "error", message: msg });
+      setScanResult({
+        status: "error",
+        message: err.name === "AbortError" ? "Request timed out. Try again." : "Connection error. Try again.",
+      });
       playErrorSound();
     }
 
     resetTimeoutRef.current = setTimeout(() => {
       resetScanner();
     }, 2000);
-  }, [resetScanner, pauseScanner]);
-
-  const processResponse = useCallback((data: any) => {
-    const st = (data.status || "").toLowerCase();
-
-    if (data.success === true || st === "success" || st === "ok") {
-      setScanResult({
-        status: "success",
-        name: data.name || data.senderType || "Attendee",
-        message: data.status || "Present",
-      });
-      setScanCount((c) => c + 1);
-      playSuccessSound();
-    } else if (st === "already_scanned" || st === "duplicate") {
-      setScanResult({
-        status: "already_scanned",
-        message: data.message || "Already Scanned",
-      });
-      playErrorSound();
-    } else if (data.error && /already/i.test(data.error)) {
-      setScanResult({
-        status: "already_scanned",
-        message: data.error || "Already Scanned",
-      });
-      playErrorSound();
-    } else if (st === "invalid" || data.success === false || data.error) {
-      setScanResult({
-        status: "invalid",
-        message: data.message || data.error || "Invalid QR Code",
-      });
-      playErrorSound();
-    } else {
-      setScanResult({
-        status: "error",
-        message: data.message || "Unexpected response",
-      });
-      playErrorSound();
-    }
-  }, []);
+  }, [resetScanner, pauseScanner, processResponse]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -186,20 +185,16 @@ export default function ScannerPage() {
         await scanner.start(
           { facingMode: "environment" },
           {
-            fps: 15,
+            fps: 10,
             qrbox: { width: 250, height: 250 },
             aspectRatio: 1,
             disableFlip: false,
           },
-          (decodedText) => {
-            handleScan(decodedText);
-          },
+          (decodedText) => handleScan(decodedText),
           () => {}
         );
 
-        if (mountedRef.current) {
-          setScanResult({ status: "scanning" });
-        }
+        if (mountedRef.current) setScanResult({ status: "scanning" });
       } catch (err: any) {
         console.error("Camera error:", err);
         if (mountedRef.current) {
@@ -227,21 +222,17 @@ export default function ScannerPage() {
     };
   }, [handleScan]);
 
-  const overlayClass = getOverlayClass(scanResult.status);
-
   return (
     <div className="scanner-page" data-testid="scanner-page">
       <header className="scanner-header" data-testid="scanner-header">
-        <div className="header-content">
+        <div className="header-left">
           <h1 className="header-title">Texperia</h1>
           <p className="header-subtitle">Event Attendance Scanner</p>
         </div>
-        {scanCount > 0 && (
-          <div className="scan-counter" data-testid="text-scan-count">
-            <span className="counter-number">{scanCount}</span>
-            <span className="counter-label">scanned</span>
-          </div>
-        )}
+        <div className="scan-counter" data-testid="text-scan-count">
+          <span className="counter-number">{scanCount}</span>
+          <span className="counter-label">scanned</span>
+        </div>
       </header>
 
       <div className="scanner-body">
@@ -256,114 +247,99 @@ export default function ScannerPage() {
           </div>
         </div>
 
-        <div className={`status-overlay ${overlayClass}`} data-testid="status-overlay">
-          {scanResult.status === "idle" && (
-            <div className="status-content">
-              <div className="status-spinner" />
-              <p className="status-text">Initializing camera...</p>
-            </div>
-          )}
-
-          {scanResult.status === "scanning" && (
-            <div className="status-content">
-              <div className="pulse-dot" />
-              <p className="status-text">Ready to scan</p>
-              <p className="status-hint">Point camera at QR code</p>
-            </div>
-          )}
-
-          {scanResult.status === "processing" && (
-            <div className="status-content">
-              <div className="status-spinner" />
-              <p className="status-text">Verifying...</p>
-            </div>
-          )}
-
-          {scanResult.status === "success" && (
-            <div className="status-content status-success" data-testid="status-success">
-              <div className="result-icon success-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-              </div>
-              <p className="result-title">{scanResult.name}</p>
-              <p className="result-subtitle">Attendance Marked</p>
-            </div>
-          )}
-
-          {scanResult.status === "already_scanned" && (
-            <div className="status-content status-warning" data-testid="status-already-scanned">
-              <div className="result-icon warning-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="12" y1="8" x2="12" y2="12" />
-                  <line x1="12" y1="16" x2="12.01" y2="16" />
-                </svg>
-              </div>
-              <p className="result-title">Already Scanned</p>
-              <p className="result-subtitle">{scanResult.message}</p>
-            </div>
-          )}
-
-          {scanResult.status === "invalid" && (
-            <div className="status-content status-error" data-testid="status-invalid">
-              <div className="result-icon error-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </div>
-              <p className="result-title">Invalid QR Code</p>
-              <p className="result-subtitle">{scanResult.message}</p>
-            </div>
-          )}
-
-          {scanResult.status === "error" && (
-            <div className="status-content status-error" data-testid="status-error">
-              <div className="result-icon error-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="15" y1="9" x2="9" y2="15" />
-                  <line x1="9" y1="9" x2="15" y2="15" />
-                </svg>
-              </div>
-              <p className="result-title">Error</p>
-              <p className="result-subtitle">{scanResult.message}</p>
-            </div>
-          )}
-
-          {scanResult.status === "camera_error" && (
-            <div className="status-content status-camera-error" data-testid="status-camera-error">
-              <div className="result-icon error-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
-                </svg>
-              </div>
-              <p className="result-title">Camera Access Required</p>
-              <p className="result-subtitle">{scanResult.message}</p>
-              <button
-                className="retry-button"
-                data-testid="button-retry-camera"
-                onClick={() => window.location.reload()}
-              >
-                Retry
-              </button>
-            </div>
-          )}
-        </div>
+        <StatusOverlay result={scanResult} />
       </div>
     </div>
   );
 }
 
-function getOverlayClass(status: ScanStatus): string {
-  switch (status) {
-    case "success": return "overlay-success";
-    case "already_scanned": return "overlay-warning";
-    case "invalid":
-    case "error": return "overlay-error";
-    case "camera_error": return "overlay-camera-error";
-    case "processing": return "overlay-processing";
-    default: return "";
-  }
+function StatusOverlay({ result }: { result: ScanResult }) {
+  const { status } = result;
+
+  let overlayClass = "";
+  if (status === "success") overlayClass = "overlay-success";
+  else if (status === "already_scanned") overlayClass = "overlay-warning";
+  else if (status === "invalid" || status === "error") overlayClass = "overlay-error";
+  else if (status === "camera_error") overlayClass = "overlay-error";
+  else if (status === "processing") overlayClass = "overlay-processing";
+
+  return (
+    <div className={`status-overlay ${overlayClass}`} data-testid="status-overlay">
+      {status === "idle" && (
+        <div className="status-content">
+          <div className="loader" />
+          <p className="status-text">Starting camera...</p>
+        </div>
+      )}
+
+      {status === "scanning" && (
+        <div className="status-content">
+          <div className="pulse-ring" />
+          <p className="status-text">Ready to scan</p>
+          <p className="status-hint">Point camera at a QR code</p>
+        </div>
+      )}
+
+      {status === "processing" && (
+        <div className="status-content">
+          <div className="loader" />
+          <p className="status-text">Verifying attendance...</p>
+          <p className="status-hint">Please wait</p>
+        </div>
+      )}
+
+      {status === "success" && (
+        <div className="status-content result-anim" data-testid="status-success">
+          <div className="result-badge success-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+          </div>
+          <p className="result-name">{result.name}</p>
+          <p className="result-label">Attendance Marked</p>
+        </div>
+      )}
+
+      {status === "already_scanned" && (
+        <div className="status-content result-anim" data-testid="status-already-scanned">
+          <div className="result-badge warning-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          </div>
+          <p className="result-name">Already Marked</p>
+          <p className="result-label">{result.message}</p>
+        </div>
+      )}
+
+      {status === "invalid" && (
+        <div className="status-content result-anim" data-testid="status-invalid">
+          <div className="result-badge error-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </div>
+          <p className="result-name">Invalid QR Code</p>
+          <p className="result-label">{result.message}</p>
+        </div>
+      )}
+
+      {status === "error" && (
+        <div className="status-content result-anim" data-testid="status-error">
+          <div className="result-badge error-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+          </div>
+          <p className="result-name">Error</p>
+          <p className="result-label">{result.message}</p>
+        </div>
+      )}
+
+      {status === "camera_error" && (
+        <div className="status-content result-anim" data-testid="status-camera-error">
+          <div className="result-badge error-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="5" x2="22" y2="19"/></svg>
+          </div>
+          <p className="result-name">Camera Access Required</p>
+          <p className="result-label">{result.message}</p>
+          <button className="retry-btn" data-testid="button-retry-camera" onClick={() => window.location.reload()}>
+            Retry
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }

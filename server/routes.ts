@@ -20,7 +20,7 @@ export async function registerRoutes(
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
 
       const response = await fetch(`${AZURE_BASE_URL}/scan`, {
         method: "POST",
