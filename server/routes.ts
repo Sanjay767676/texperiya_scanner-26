@@ -53,9 +53,13 @@ function extractToken(qrData: string): string {
   const trimmed = qrData.trim();
   try {
     const url = new URL(trimmed);
+    const tokenParam = url.searchParams.get("token");
+    if (tokenParam) return tokenParam;
     const pathMatch = url.pathname.match(/\/scan\/(.+)/);
     if (pathMatch) return pathMatch[1].replace(/\/+$/, "");
   } catch (_) {}
+  const queryMatch = trimmed.match(/[?&]token=([^\s&#]+)/);
+  if (queryMatch) return queryMatch[1];
   const pathMatch = trimmed.match(/\/scan\/([^\s?#]+)/);
   if (pathMatch) return pathMatch[1].replace(/\/+$/, "");
   return trimmed;
