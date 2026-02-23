@@ -15,59 +15,49 @@ export async function registerRoutes(
       return res.status(400).json({ success: false, message: "Missing qrData" });
     }
 
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const token = extractToken(qrData);
+    console.log(`Scanning token: ${token} (from qrData: ${qrData.substring(0, 80)})`);
 
-      const response = await fetch(`${AZURE_BASE_URL}/api/scan`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ qrData }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
+    const endpoints = [
+      { url: `${AZURE_BASE_URL}/scan/${encodeURIComponent(token)}`, method: "POST" as const, body: null },
+      { url: `${AZURE_BASE_URL}/scan/${encodeURIComponent(token)}`, method: "GET" as const, body: null },
+      { url: `${AZURE_BASE_URL}/api/scan`, method: "POST" as const, body: JSON.stringify({ qrData }) },
+    ];
 
-      const data = await response.json();
-      return res.json(data);
-    } catch (primaryErr: any) {
+    for (const endpoint of endpoints) {
       try {
-        const token = extractToken(qrData);
-        const controller2 = new AbortController();
-        const timeoutId2 = setTimeout(() => controller2.abort(), 8000);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-        const fallback = await fetch(`${AZURE_BASE_URL}/scan/${encodeURIComponent(token)}`, {
-          method: "POST",
-          signal: controller2.signal,
-        });
-        clearTimeout(timeoutId2);
+        const fetchOptions: RequestInit = {
+          method: endpoint.method,
+          signal: controller.signal,
+        };
+        if (endpoint.body) {
+          fetchOptions.headers = { "Content-Type": "application/json" };
+          fetchOptions.body = endpoint.body;
+        }
 
-        const data = await fallback.json();
+        const response = await fetch(endpoint.url, fetchOptions);
+        clearTimeout(timeoutId);
+
+        const contentType = response.headers.get("content-type") || "";
+        if (!contentType.includes("application/json")) {
+          console.log(`Endpoint ${endpoint.method} ${endpoint.url} returned non-JSON (${contentType}), skipping`);
+          continue;
+        }
+
+        const data = await response.json();
+        console.log(`Endpoint ${endpoint.method} ${endpoint.url} returned:`, JSON.stringify(data));
         return res.json(data);
-      } catch (fallbackErr: any) {
-        console.error("Scan proxy error:", primaryErr?.message, fallbackErr?.message);
-        return res.status(502).json({ success: false, message: "Backend unreachable" });
+      } catch (err: any) {
+        console.log(`Endpoint ${endpoint.method} ${endpoint.url} failed: ${err?.message}`);
+        continue;
       }
     }
-  });
 
-  app.post("/api/scan-token/:token", async (req, res) => {
-    const { token } = req.params;
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-      const response = await fetch(`${AZURE_BASE_URL}/scan/${encodeURIComponent(token)}`, {
-        method: "POST",
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      const data = await response.json();
-      return res.json(data);
-    } catch (err: any) {
-      console.error("Token scan proxy error:", err?.message);
-      return res.status(502).json({ success: false, message: "Backend unreachable" });
-    }
+    console.error("All scan endpoints failed for token:", token);
+    return res.status(502).json({ success: false, message: "Backend unreachable" });
   });
 
   return httpServer;
