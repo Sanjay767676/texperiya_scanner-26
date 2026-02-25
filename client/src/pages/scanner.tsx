@@ -315,8 +315,7 @@ export default function ScannerPage() {
             scanDelay={100}
             constraints={{ 
               facingMode: "environment",
-              focusMode: "continuous",
-              advanced: [{ zoom: 1.0 }]
+              focusMode: "continuous"
             }}
             formats={["qr_code"]}
             components={{ finder: false }}
