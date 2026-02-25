@@ -11,6 +11,12 @@ interface ScanResult {
   message?: string;
 }
 
+interface QueuedScan {
+  qrData: string;
+  timestamp: number;
+  retries: number;
+}
+
 function playTone(frequency: number, duration: number, type: OscillatorType = "sine") {
   try {
     const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -46,72 +52,164 @@ function playErrorSound() {
 export default function ScannerPage() {
   const [scanResult, setScanResult] = useState<ScanResult>({ status: "scanning" });
   const [scanCount, setScanCount] = useState(0);
-  const [paused, setPaused] = useState(false);
   const isProcessingRef = useRef(false);
   const lastScannedRef = useRef<string>("");
   const lastScanTimeRef = useRef<number>(0);
   const mountedRef = useRef(true);
   const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
-    };
-  }, []);
+  const bannerTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const offlineQueueRef = useRef<QueuedScan[]>([]);
+  const retryIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const resetScanner = useCallback(() => {
     if (!mountedRef.current) return;
     isProcessingRef.current = false;
-    setPaused(false);
     setScanResult({ status: "scanning" });
   }, []);
 
-  const processResponse = useCallback((data: any) => {
+  const triggerHaptic = useCallback(() => {
+    try {
+      if (navigator.vibrate) {
+        navigator.vibrate([100]);
+      }
+    } catch (_) {}
+  }, []);
+
+  const addToOfflineQueue = useCallback((qrData: string) => {
+    // Check if already in queue
+    const exists = offlineQueueRef.current.some(item => item.qrData === qrData);
+    if (!exists) {
+      offlineQueueRef.current.push({
+        qrData,
+        timestamp: Date.now(),
+        retries: 0
+      });
+      console.log(`Added to offline queue: ${qrData}`);
+    }
+  }, []);
+
+  const processOfflineQueue = useCallback(async () => {
+    if (offlineQueueRef.current.length === 0) return;
+    
+    const queue = [...offlineQueueRef.current];
+    offlineQueueRef.current = [];
+    
+    for (const item of queue) {
+      try {
+        const response = await fetch("/api/scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ qrData: item.qrData }),
+          signal: AbortSignal.timeout(10000)
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.success) {
+            setScanCount((c) => c + 1);
+            console.log(`Offline scan processed: ${item.qrData}`);
+          }
+        } else {
+          // Re-queue if not too many retries
+          if (item.retries < 3) {
+            offlineQueueRef.current.push({ ...item, retries: item.retries + 1 });
+          }
+        }
+      } catch (err) {
+        // Re-queue if network error and not too many retries
+        if (item.retries < 3) {
+          offlineQueueRef.current.push({ ...item, retries: item.retries + 1 });
+        }
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    
+    // Start retry interval for offline queue
+    retryIntervalRef.current = setInterval(() => {
+      processOfflineQueue();
+    }, 5000); // Check every 5 seconds
+    
+    return () => {
+      mountedRef.current = false;
+      if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
+      if (bannerTimeoutRef.current) clearTimeout(bannerTimeoutRef.current);
+      if (retryIntervalRef.current) clearInterval(retryIntervalRef.current);
+    };
+  }, [processOfflineQueue]);
+
+  const processResponse = useCallback((data: any, statusCode?: number) => {
     const st = (data.status || "").toLowerCase();
     const errMsg = data.error || data.message || "";
+    const studentName = data.studentName || data.name || "";
+    const senderType = data.senderType || "";
+    const displayName = studentName || senderType || "Attendee";
+
+    // Clear any existing banner timeout
+    if (bannerTimeoutRef.current) {
+      clearTimeout(bannerTimeoutRef.current);
+    }
+
+    // Handle 409 Conflict specifically
+    if (statusCode === 409) {
+      setScanResult({
+        status: "already_scanned",
+        message: "⚠️ ALREADY MARKED",
+      });
+      playWarningSound();
+      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
+      return;
+    }
 
     if (data.success === true || st === "success" || st === "ok") {
       setScanResult({
         status: "success",
-        name: data.name || data.senderType || "Attendee",
-        message: "Attendance Marked",
+        name: displayName,
+        message: `${senderType ? `[${senderType}]` : ""} Attendance Marked`.trim(),
       });
       setScanCount((c) => c + 1);
       playSuccessSound();
+      triggerHaptic();
+      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
     } else if (st === "already_scanned" || st === "duplicate" || /already/i.test(errMsg)) {
       setScanResult({
         status: "already_scanned",
-        message: errMsg || "Already Scanned",
+        message: errMsg || "⚠️ ALREADY MARKED",
       });
       playWarningSound();
+      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
     } else if (data.success === false && /unreachable|timeout|error/i.test(errMsg)) {
       setScanResult({
         status: "error",
         message: errMsg || "Server error. Try again.",
       });
       playErrorSound();
+      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
     } else if (st === "invalid" || /invalid/i.test(errMsg)) {
       setScanResult({
         status: "invalid",
         message: errMsg || "Invalid QR Code",
       });
       playErrorSound();
+      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
     } else if (data.error) {
       setScanResult({
         status: "error",
         message: errMsg || "Something went wrong",
       });
       playErrorSound();
+      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
     } else {
       setScanResult({
         status: "error",
         message: errMsg || "Unexpected response",
       });
       playErrorSound();
+      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
     }
-  }, []);
+  }, [resetScanner, triggerHaptic]);
 
   const handleScan = useCallback((results: any[]) => {
     if (!results || results.length === 0 || isProcessingRef.current) return;
@@ -119,20 +217,21 @@ export default function ScannerPage() {
     if (!decodedText) return;
 
     const now = Date.now();
-    if (decodedText === lastScannedRef.current && now - lastScanTimeRef.current < 3000) {
+    // 2-second debounce for same QR code
+    if (decodedText === lastScannedRef.current && now - lastScanTimeRef.current < 2000) {
       return;
     }
 
     isProcessingRef.current = true;
     lastScannedRef.current = decodedText;
     lastScanTimeRef.current = now;
-    setPaused(true);
+    // Don't pause scanner - keep it active for next scan
     setScanResult({ status: "processing" });
 
     (async () => {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 15000);
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
 
         const response = await fetch("/api/scan", {
           method: "POST",
@@ -145,7 +244,7 @@ export default function ScannerPage() {
         if (!response.ok) {
           const errorData = await response.json().catch(() => null);
           if (errorData) {
-            processResponse(errorData);
+            processResponse(errorData, response.status);
           } else {
             throw new Error(`Server error: ${response.status}`);
           }
@@ -156,18 +255,27 @@ export default function ScannerPage() {
         }
       } catch (err: any) {
         if (!mountedRef.current) return;
+        
+        // Add to offline queue if network error
+        const isNetworkError = err.name === "AbortError" || err.message?.includes("fetch") || err.message?.includes("network");
+        if (isNetworkError) {
+          addToOfflineQueue(decodedText);
+        }
+        
         setScanResult({
           status: "error",
           message: err.name === "AbortError" ? "Request timed out. Try again." : "Connection error. Try again.",
         });
         playErrorSound();
+        bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
+      } finally {
+        // Reset processing flag immediately to allow next scan
+        resetTimeoutRef.current = setTimeout(() => {
+          isProcessingRef.current = false;
+        }, 300);
       }
-
-      resetTimeoutRef.current = setTimeout(() => {
-        resetScanner();
-      }, 2000);
     })();
-  }, [resetScanner, processResponse]);
+  }, [resetScanner, processResponse, triggerHaptic, addToOfflineQueue]);
 
   const statusClass =
     scanResult.status === "success" ? "status-success" :
@@ -203,9 +311,13 @@ export default function ScannerPage() {
                 });
               }
             }}
-            paused={paused}
-            scanDelay={500}
-            constraints={{ facingMode: "environment" }}
+            paused={false}
+            scanDelay={100}
+            constraints={{ 
+              facingMode: "environment",
+              focusMode: "continuous",
+              advanced: [{ zoom: 1.0 }]
+            }}
             formats={["qr_code"]}
             components={{ finder: false }}
             styles={{

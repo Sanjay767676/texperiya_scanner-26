@@ -38,7 +38,9 @@ export async function registerRoutes(
 
       const data = await response.json();
       console.log("Backend response:", JSON.stringify(data));
-      return res.json(data);
+      
+      // Pass through the status code from backend (especially 409 for already scanned)
+      return res.status(response.status).json(data);
     } catch (err: any) {
       const msg = err.name === "AbortError" ? "Backend timeout" : "Backend unreachable";
       console.error("Scan proxy error:", err?.message);
