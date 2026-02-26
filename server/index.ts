@@ -90,14 +90,32 @@ app.use((req, res, next) => {
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || "5000", 10);
-  httpServer.listen(
-    {
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    },
-    () => {
-      log(`serving on port ${port}`);
-    },
-  );
+  
+  // Try to listen with reusePort first, fall back without it
+  const attemptListen = (useReusePort: boolean) => {
+    return new Promise<void>((resolve, reject) => {
+      const options: any = { port, host: "0.0.0.0" };
+      if (useReusePort) {
+        options.reusePort = true;
+      }
+      
+      httpServer.listen(options, () => {
+        log(`serving on port ${port}`);
+        resolve();
+      });
+      
+      httpServer.once("error", (err: any) => {
+        if (useReusePort && err.code === "ENOTSUP") {
+          // reusePort not supported, try without it
+          httpServer.removeAllListeners("error");
+          httpServer.close();
+          attemptListen(false).then(resolve).catch(reject);
+        } else {
+          reject(err);
+        }
+      });
+    });
+  };
+  
+  await attemptListen(true);
 })();

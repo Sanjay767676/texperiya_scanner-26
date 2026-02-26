@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Scanner } from "@yudiel/react-qr-scanner";
-import scannerLogo from "@assets/scanner-logo.png";
+import scannerLogo from "@assets/skeleton.png";
 import "./scanner.css";
 
 type ScanStatus = "scanning" | "processing" | "success" | "already_scanned" | "invalid" | "error" | "camera_error";
