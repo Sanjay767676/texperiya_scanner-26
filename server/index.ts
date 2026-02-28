@@ -12,6 +12,16 @@ declare module "http" {
   }
 }
 
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 app.use(
   express.json({
     verify: (req, _res, buf) => {
@@ -90,7 +100,7 @@ app.use((req, res, next) => {
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || "5000", 10);
-  
+
   // Try to listen with reusePort first, fall back without it
   const attemptListen = (useReusePort: boolean) => {
     return new Promise<void>((resolve, reject) => {
@@ -98,12 +108,12 @@ app.use((req, res, next) => {
       if (useReusePort) {
         options.reusePort = true;
       }
-      
+
       httpServer.listen(options, () => {
         log(`serving on port ${port}`);
         resolve();
       });
-      
+
       httpServer.once("error", (err: any) => {
         if (useReusePort && err.code === "ENOTSUP") {
           // reusePort not supported, try without it
@@ -116,6 +126,6 @@ app.use((req, res, next) => {
       });
     });
   };
-  
+
   await attemptListen(true);
 })();

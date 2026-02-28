@@ -30,7 +30,7 @@ function playTone(frequency: number, duration: number, type: OscillatorType = "s
     gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + duration);
     osc.start(ctx.currentTime);
     osc.stop(ctx.currentTime + duration);
-  } catch (_) {}
+  } catch (_) { }
 }
 
 function playSuccessSound() {
@@ -52,6 +52,11 @@ function playErrorSound() {
 export default function ScannerPage() {
   const [scanResult, setScanResult] = useState<ScanResult>({ status: "scanning" });
   const [scanCount, setScanCount] = useState(0);
+  const [backendStatus, setBackendStatus] = useState<"connecting" | "connected" | "unreachable">("connecting");
+  const [debugMode, setDebugMode] = useState(false);
+  const [lastResponse, setLastResponse] = useState<any>(null);
+  const [lastLatency, setLastLatency] = useState<number>(0);
+
   const isProcessingRef = useRef(false);
   const lastScannedRef = useRef<string>("");
   const lastScanTimeRef = useRef<number>(0);
@@ -60,6 +65,25 @@ export default function ScannerPage() {
   const bannerTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const offlineQueueRef = useRef<QueuedScan[]>([]);
   const retryIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin;
+
+  useEffect(() => {
+    console.log(`[Scanner] App Startup - API Base URL: ${API_BASE_URL}`);
+  }, [API_BASE_URL]);
+
+  const checkHealth = useCallback(async () => {
+    try {
+      const response = await fetch("/api/health", { signal: AbortSignal.timeout(5000) });
+      if (response.ok) {
+        setBackendStatus("connected");
+      } else {
+        setBackendStatus("unreachable");
+      }
+    } catch (err) {
+      setBackendStatus("unreachable");
+    }
+  }, []);
 
   const resetScanner = useCallback(() => {
     if (!mountedRef.current) return;
@@ -72,11 +96,10 @@ export default function ScannerPage() {
       if (navigator.vibrate) {
         navigator.vibrate([100]);
       }
-    } catch (_) {}
+    } catch (_) { }
   }, []);
 
   const addToOfflineQueue = useCallback((qrData: string) => {
-    // Check if already in queue
     const exists = offlineQueueRef.current.some(item => item.qrData === qrData);
     if (!exists) {
       offlineQueueRef.current.push({
@@ -84,39 +107,35 @@ export default function ScannerPage() {
         timestamp: Date.now(),
         retries: 0
       });
-      console.log(`Added to offline queue: ${qrData}`);
+      console.log(`[Scanner] Added to offline queue: ${qrData}`);
     }
   }, []);
 
   const processOfflineQueue = useCallback(async () => {
     if (offlineQueueRef.current.length === 0) return;
-    
+
     const queue = [...offlineQueueRef.current];
     offlineQueueRef.current = [];
-    
+
     for (const item of queue) {
       try {
         const response = await fetch("/api/scan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ qrData: item.qrData }),
-          signal: AbortSignal.timeout(10000)
+          signal: AbortSignal.timeout(5000)
         });
-        
+
         if (response.ok) {
           const data = await response.json();
           if (data.success) {
             setScanCount((c) => c + 1);
-            console.log(`Offline scan processed: ${item.qrData}`);
+            console.log(`[Scanner] Offline scan processed: ${item.qrData}`);
           }
-        } else {
-          // Re-queue if not too many retries
-          if (item.retries < 3) {
-            offlineQueueRef.current.push({ ...item, retries: item.retries + 1 });
-          }
+        } else if (item.retries < 3) {
+          offlineQueueRef.current.push({ ...item, retries: item.retries + 1 });
         }
       } catch (err) {
-        // Re-queue if network error and not too many retries
         if (item.retries < 3) {
           offlineQueueRef.current.push({ ...item, retries: item.retries + 1 });
         }
@@ -126,39 +145,42 @@ export default function ScannerPage() {
 
   useEffect(() => {
     mountedRef.current = true;
-    
-    // Start retry interval for offline queue
-    retryIntervalRef.current = setInterval(() => {
-      processOfflineQueue();
-    }, 5000); // Check every 5 seconds
-    
+    checkHealth();
+
+    const healthInterval = setInterval(checkHealth, 30000);
+    retryIntervalRef.current = setInterval(processOfflineQueue, 5000);
+
     return () => {
       mountedRef.current = false;
+      clearInterval(healthInterval);
       if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
       if (bannerTimeoutRef.current) clearTimeout(bannerTimeoutRef.current);
       if (retryIntervalRef.current) clearInterval(retryIntervalRef.current);
     };
-  }, [processOfflineQueue]);
+  }, [processOfflineQueue, checkHealth]);
 
   const processResponse = useCallback((data: any, statusCode?: number) => {
-    const st = (data.status || "").toLowerCase();
-    const errMsg = data.error || data.message || "";
-    const studentName = data.studentName || data.name || "";
-    const senderType = data.senderType || "";
+    setLastResponse(data);
+    const st = (data?.status || "").toLowerCase();
+    const errMsg = data?.error || data?.message || "";
+    const studentName = data?.studentName || data?.name || "";
+    const senderType = data?.senderType || "";
     const displayName = studentName || senderType || "Attendee";
 
-    // Clear any existing banner timeout
     if (bannerTimeoutRef.current) {
       clearTimeout(bannerTimeoutRef.current);
     }
 
-    // Handle 409 Conflict specifically
     if (statusCode === 409) {
-      setScanResult({
-        status: "already_scanned",
-        message: "⚠️ ALREADY MARKED",
-      });
+      setScanResult({ status: "already_scanned", message: "⚠️ ALREADY MARKED" });
       playWarningSound();
+      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
+      return;
+    }
+
+    if (!data || typeof data !== 'object') {
+      setScanResult({ status: "error", message: "Invalid Server Response" });
+      playErrorSound();
       bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
       return;
     }
@@ -174,123 +196,124 @@ export default function ScannerPage() {
       triggerHaptic();
       bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
     } else if (st === "already_scanned" || st === "duplicate" || /already/i.test(errMsg)) {
-      setScanResult({
-        status: "already_scanned",
-        message: errMsg || "⚠️ ALREADY MARKED",
-      });
+      setScanResult({ status: "already_scanned", message: errMsg || "⚠️ ALREADY MARKED" });
       playWarningSound();
       bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
-    } else if (data.success === false && /unreachable|timeout|error/i.test(errMsg)) {
-      setScanResult({
-        status: "error",
-        message: errMsg || "Server error. Try again.",
-      });
-      playErrorSound();
-      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
     } else if (st === "invalid" || /invalid/i.test(errMsg)) {
-      setScanResult({
-        status: "invalid",
-        message: errMsg || "Invalid QR Code",
-      });
-      playErrorSound();
-      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
-    } else if (data.error) {
-      setScanResult({
-        status: "error",
-        message: errMsg || "Something went wrong",
-      });
+      setScanResult({ status: "invalid", message: errMsg || "Invalid QR Code" });
       playErrorSound();
       bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
     } else {
-      setScanResult({
-        status: "error",
-        message: errMsg || "Unexpected response",
-      });
+      setScanResult({ status: "error", message: errMsg || "Something went wrong" });
       playErrorSound();
       bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
     }
   }, [resetScanner, triggerHaptic]);
 
-  const handleScan = useCallback((results: any[]) => {
-    if (!results || results.length === 0 || isProcessingRef.current) return;
-    const decodedText = results[0]?.rawValue;
+  const handleScan = useCallback(async (results: any[], isRetry = false) => {
+    if (!results || results.length === 0 || (isProcessingRef.current && !isRetry)) return;
+    const decodedText = results[0]?.rawValue || (typeof results === 'string' ? results : null);
     if (!decodedText) return;
 
     const now = Date.now();
-    // 2-second debounce for same QR code
-    if (decodedText === lastScannedRef.current && now - lastScanTimeRef.current < 2000) {
+    if (!isRetry && decodedText === lastScannedRef.current && now - lastScanTimeRef.current < 2000) {
       return;
     }
 
     isProcessingRef.current = true;
-    lastScannedRef.current = decodedText;
-    lastScanTimeRef.current = now;
-    // Don't pause scanner - keep it active for next scan
-    setScanResult({ status: "processing" });
+    if (!isRetry) {
+      lastScannedRef.current = decodedText;
+      lastScanTimeRef.current = now;
+      setScanResult({ status: "processing" });
+    }
 
-    (async () => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const startTime = Date.now();
+    try {
+      const response = await fetch("/api/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ qrData: decodedText }),
+        signal: AbortSignal.timeout(5000),
+      });
 
-        const response = await fetch("/api/scan", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ qrData: decodedText }),
-          signal: controller.signal,
-        });
-        clearTimeout(timeoutId);
-
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => null);
-          if (errorData) {
-            processResponse(errorData, response.status);
-          } else {
-            throw new Error(`Server error: ${response.status}`);
-          }
-        } else {
-          const data = await response.json();
-          if (!mountedRef.current) return;
-          processResponse(data);
-        }
-      } catch (err: any) {
-        if (!mountedRef.current) return;
-        
-        // Add to offline queue if network error
-        const isNetworkError = err.name === "AbortError" || err.message?.includes("fetch") || err.message?.includes("network");
-        if (isNetworkError) {
-          addToOfflineQueue(decodedText);
-        }
-        
-        setScanResult({
-          status: "error",
-          message: err.name === "AbortError" ? "Request timed out. Try again." : "Connection error. Try again.",
-        });
-        playErrorSound();
-        bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
-      } finally {
-        // Reset processing flag immediately to allow next scan
-        resetTimeoutRef.current = setTimeout(() => {
-          isProcessingRef.current = false;
-        }, 300);
+      const latency = Date.now() - startTime;
+      setLastLatency(latency);
+      if (latency > 2000) {
+        console.warn(`[Scanner] Slow Response: ${latency}ms for ${decodedText}`);
       }
-    })();
+
+      console.log(`[Scanner] POST /api/scan ${response.status} in ${latency}ms`);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => null);
+
+        // Auto-retry once after 1 second if not already retrying
+        if (!isRetry && response.status >= 500) {
+          console.log("[Scanner] Server error, retrying in 1s...");
+          setTimeout(() => handleScan([{ rawValue: decodedText }], true), 1000);
+          return;
+        }
+
+        if (errorData) {
+          processResponse(errorData, response.status);
+        } else {
+          const statusText = response.status === 404 ? "Invalid Endpoint" : response.status >= 500 ? "Server Error" : "Network Error";
+          setScanResult({ status: "error", message: statusText });
+          playErrorSound();
+          bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
+        }
+      } else {
+        const data = await response.json();
+        if (!mountedRef.current) return;
+        processResponse(data);
+      }
+    } catch (err: any) {
+      if (!mountedRef.current) return;
+      const latency = Date.now() - startTime;
+      setLastLatency(latency);
+
+      console.error(`[Scanner] Request failed: ${err.message} (${latency}ms)`);
+
+      // Auto-retry once after 1 second if not already retrying
+      if (!isRetry && err.name !== "AbortError") {
+        console.log("[Scanner] Connection error, retrying in 1s...");
+        setTimeout(() => handleScan([{ rawValue: decodedText }], true), 1000);
+        return;
+      }
+
+      const isNetworkError = err.name === "AbortError" || err.message?.includes("fetch") || err.message?.includes("network");
+      if (isNetworkError) {
+        addToOfflineQueue(decodedText);
+      }
+
+      const errMsg = err.name === "AbortError" ? "Request Timeout" : "Network Error";
+      setScanResult({ status: "error", message: errMsg });
+      playErrorSound();
+      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
+    } finally {
+      resetTimeoutRef.current = setTimeout(() => {
+        isProcessingRef.current = false;
+      }, 300);
+    }
   }, [resetScanner, processResponse, triggerHaptic, addToOfflineQueue]);
 
   const statusClass =
     scanResult.status === "success" ? "status-success" :
-    scanResult.status === "already_scanned" ? "status-warning" :
-    scanResult.status === "invalid" || scanResult.status === "error" || scanResult.status === "camera_error" ? "status-error" :
-    scanResult.status === "processing" ? "status-processing" : "";
+      scanResult.status === "already_scanned" ? "status-warning" :
+        scanResult.status === "invalid" || scanResult.status === "error" || scanResult.status === "camera_error" ? "status-error" :
+          scanResult.status === "processing" ? "status-processing" : "";
 
   return (
     <div className="scanner-page" data-testid="scanner-page">
-      <header className="scanner-header" data-testid="scanner-header">
+      <header className="scanner-header" data-testid="scanner-header" onDoubleClick={() => setDebugMode(!debugMode)}>
         <div className="header-left">
           <img src={scannerLogo} alt="Scanner" className="header-logo" />
           <div className="header-text">
             <h1 className="header-title">Texperia</h1>
-            <p className="header-subtitle">Attendance Scanner</p>
+            <div className={`health-indicator ${backendStatus}`}>
+              <span className="bullet">•</span>
+              {backendStatus === "connected" ? "Backend Connected" : backendStatus === "connecting" ? "Connecting..." : "Server Unreachable"}
+            </div>
           </div>
         </div>
         <div className="scan-counter" data-testid="text-scan-count">
@@ -313,9 +336,7 @@ export default function ScannerPage() {
             }}
             paused={false}
             scanDelay={100}
-            constraints={{ 
-              facingMode: "environment"
-            }}
+            constraints={{ facingMode: "environment" }}
             formats={["qr_code"]}
             components={{ finder: false }}
             styles={{
@@ -330,6 +351,16 @@ export default function ScannerPage() {
             <div className="corner corner-br" />
             {scanResult.status === "scanning" && <div className="scan-line" />}
           </div>
+
+          {debugMode && (
+            <div className="debug-overlay">
+              <h3>DEBUG MODE</h3>
+              <p>Latency: {lastLatency}ms</p>
+              <p>Base URL: {API_BASE_URL}</p>
+              <pre>{JSON.stringify(lastResponse, null, 2)}</pre>
+              <button onClick={() => setDebugMode(false)}>Close</button>
+            </div>
+          )}
         </div>
 
         <div className={`status-bar ${statusClass}`} data-testid="status-overlay">
@@ -362,7 +393,7 @@ export default function ScannerPage() {
           {scanResult.status === "already_scanned" && (
             <div className="status-row result-anim" data-testid="status-already-scanned">
               <div className="status-icon warning-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
               </div>
               <div className="status-info">
                 <span className="status-primary">Already Marked</span>
@@ -374,7 +405,7 @@ export default function ScannerPage() {
           {scanResult.status === "invalid" && (
             <div className="status-row result-anim" data-testid="status-invalid">
               <div className="status-icon error-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
               </div>
               <div className="status-info">
                 <span className="status-primary">Invalid QR</span>
@@ -386,7 +417,7 @@ export default function ScannerPage() {
           {scanResult.status === "error" && (
             <div className="status-row result-anim" data-testid="status-error">
               <div className="status-icon error-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" /></svg>
               </div>
               <div className="status-info">
                 <span className="status-primary">Error</span>
@@ -398,7 +429,7 @@ export default function ScannerPage() {
           {scanResult.status === "camera_error" && (
             <div className="status-row result-anim" data-testid="status-camera-error">
               <div className="status-icon error-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="5" x2="22" y2="19"/></svg>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2" /><line x1="2" y1="5" x2="22" y2="19" /></svg>
               </div>
               <div className="status-info">
                 <span className="status-primary">Camera Access Required</span>
@@ -412,3 +443,4 @@ export default function ScannerPage() {
     </div>
   );
 }
+

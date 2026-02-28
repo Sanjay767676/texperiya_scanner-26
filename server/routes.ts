@@ -9,6 +9,21 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
 
+  app.get("/api/health", async (_req, res) => {
+    try {
+      const response = await fetch(`${AZURE_BASE_URL}/health`, {
+        signal: AbortSignal.timeout(5000)
+      }).catch(() => null);
+
+      if (response && response.ok) {
+        return res.json({ status: "ok", backend: "connected" });
+      }
+      return res.status(503).json({ status: "error", backend: "unreachable" });
+    } catch (err) {
+      return res.status(503).json({ status: "error", backend: "error" });
+    }
+  });
+
   app.post("/api/scan", async (req, res) => {
     const { qrData } = req.body;
     if (!qrData) {
@@ -38,7 +53,7 @@ export async function registerRoutes(
 
       const data = await response.json();
       console.log("Backend response:", JSON.stringify(data));
-      
+
       // Pass through the status code from backend (especially 409 for already scanned)
       return res.status(response.status).json(data);
     } catch (err: any) {
@@ -59,7 +74,7 @@ function extractToken(qrData: string): string {
     if (tokenParam) return tokenParam;
     const pathMatch = url.pathname.match(/\/scan\/(.+)/);
     if (pathMatch) return pathMatch[1].replace(/\/+$/, "");
-  } catch (_) {}
+  } catch (_) { }
   const queryMatch = trimmed.match(/[?&]token=([^\s&#]+)/);
   if (queryMatch) return queryMatch[1];
   const pathMatch = trimmed.match(/\/scan\/([^\s?#]+)/);
