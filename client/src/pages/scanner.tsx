@@ -49,6 +49,22 @@ function playErrorSound() {
   setTimeout(() => playTone(220, 0.25, "square"), 150);
 }
 
+function extractToken(qrData: string): string {
+  const trimmed = qrData.trim();
+  try {
+    const url = new URL(trimmed);
+    const tokenParam = url.searchParams.get("token");
+    if (tokenParam) return tokenParam;
+    const pathMatch = url.pathname.match(/\/scan\/(.+)/);
+    if (pathMatch) return pathMatch[1].replace(/\/+$/, "");
+  } catch (_) { }
+  const queryMatch = trimmed.match(/[?&]token=([^\s&#]+)/);
+  if (queryMatch) return queryMatch[1];
+  const pathMatch = trimmed.match(/\/scan\/([^\s?#]+)/);
+  if (pathMatch) return pathMatch[1].replace(/\/+$/, "");
+  return trimmed;
+}
+
 export default function ScannerPage() {
   const [scanResult, setScanResult] = useState<ScanResult>({ status: "scanning" });
   const [scanCount, setScanCount] = useState(0);
@@ -120,10 +136,11 @@ export default function ScannerPage() {
 
     for (const item of queue) {
       try {
+        const token = extractToken(item.qrData);
         const response = await fetch(`${API_BASE_URL}/scan`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ qrData: item.qrData }),
+          body: JSON.stringify({ token }),
           signal: AbortSignal.timeout(5000)
         });
 
@@ -230,10 +247,11 @@ export default function ScannerPage() {
 
     const startTime = Date.now();
     try {
+      const token = extractToken(decodedText);
       const response = await fetch(`${API_BASE_URL}/scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ qrData: decodedText }),
+        body: JSON.stringify({ token }),
         signal: AbortSignal.timeout(5000),
       });
 
