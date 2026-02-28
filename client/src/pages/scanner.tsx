@@ -66,7 +66,7 @@ export default function ScannerPage() {
   const offlineQueueRef = useRef<QueuedScan[]>([]);
   const retryIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin;
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://texperia-backend-anbub8brccgzfzd9.southindia-01.azurewebsites.net";
 
   useEffect(() => {
     console.log(`[Scanner] App Startup - API Base URL: ${API_BASE_URL}`);
@@ -74,7 +74,8 @@ export default function ScannerPage() {
 
   const checkHealth = useCallback(async () => {
     try {
-      const response = await fetch("/api/health", { signal: AbortSignal.timeout(5000) });
+      // Direct call to backend health check
+      const response = await fetch(`${API_BASE_URL}/health`, { signal: AbortSignal.timeout(5000) });
       if (response.ok) {
         setBackendStatus("connected");
       } else {
@@ -83,7 +84,7 @@ export default function ScannerPage() {
     } catch (err) {
       setBackendStatus("unreachable");
     }
-  }, []);
+  }, [API_BASE_URL]);
 
   const resetScanner = useCallback(() => {
     if (!mountedRef.current) return;
@@ -119,7 +120,7 @@ export default function ScannerPage() {
 
     for (const item of queue) {
       try {
-        const response = await fetch("/api/scan", {
+        const response = await fetch(`${API_BASE_URL}/scan`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ qrData: item.qrData }),
@@ -229,7 +230,7 @@ export default function ScannerPage() {
 
     const startTime = Date.now();
     try {
-      const response = await fetch("/api/scan", {
+      const response = await fetch(`${API_BASE_URL}/scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ qrData: decodedText }),
