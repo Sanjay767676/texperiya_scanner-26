@@ -14,8 +14,9 @@ declare module "http" {
 
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  
   if (req.method === "OPTIONS") {
     return res.sendStatus(200);
   }
@@ -111,6 +112,12 @@ app.use((req, res, next) => {
 
       httpServer.listen(options, () => {
         log(`serving on port ${port}`);
+        console.log(`[Server] Development server started on http://localhost:${port}`);
+        console.log(`[Server] API routes available at:`);
+        console.log(`[Server]   GET  http://localhost:${port}/api/health`);
+        console.log(`[Server]   POST http://localhost:${port}/api/scan`);
+        console.log(`[Server]   POST http://localhost:${port}/api/lunch`);
+        console.log(`[Server]   GET  http://localhost:${port}/api/test`);
         resolve();
       });
 

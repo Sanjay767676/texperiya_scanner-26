@@ -97,21 +97,8 @@ export default function ScannerPage() {
 
   const checkHealth = useCallback(async () => {
     try {
-      console.log(`[Scanner] Checking backend health: ${API_BASE_URL}`);
+      console.log(`[Scanner] Checking Azure backend health: ${API_BASE_URL}`);
       
-      // Try local server first (for development)
-      try {
-        const localResponse = await fetch("/api/health", { signal: AbortSignal.timeout(3000) });
-        if (localResponse.ok) {
-          console.log("[Scanner] Local server health check passed");
-          setBackendStatus("connected");
-          return;
-        }
-      } catch (localErr) {
-        console.log("[Scanner] Local server not available, trying direct backend");
-      }
-      
-      // Try direct backend connection
       const response = await fetch(`${API_BASE_URL}/health`, { 
         signal: AbortSignal.timeout(8000),
         mode: 'cors',
@@ -122,14 +109,14 @@ export default function ScannerPage() {
       
       if (response.ok) {
         const data = await response.json();
-        console.log("[Scanner] Direct backend health check passed:", data);
+        console.log("[Scanner] Azure backend health check passed:", data);
         setBackendStatus("connected");
       } else {
         console.warn(`[Scanner] Backend responded with status: ${response.status}`);
         setBackendStatus("unreachable");
       }
     } catch (err) {
-      console.warn("[Scanner] Backend health check failed:", err);
+      console.warn("[Scanner] Azure backend health check failed:", err);
       setBackendStatus("unreachable");
     }
   }, [API_BASE_URL]);
@@ -372,49 +359,30 @@ export default function ScannerPage() {
       const token = extractToken(decodedText);
       console.log(`[Scanner] Scanning token: ${token} using endpoint: ${currentEndpoint}`);
       
-      // Try local proxy first, then fallback to direct backend
-      let url = currentEndpoint === "lunch" ? "/api/lunch" : "/api/scan";
-      let response;
+      // Direct Azure backend call
+      const directUrl = currentEndpoint === "lunch" 
+        ? `${API_BASE_URL}/lunch` 
+        : `${API_BASE_URL}/scan`;
+        
+      const response = await fetch(directUrl, {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ token, qrData: decodedText }),
+        signal: AbortSignal.timeout(15000),
+        mode: 'cors'
+      });
       
-      try {
-        // Try local proxy route
-        response = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token, qrData: decodedText }),
-          signal: AbortSignal.timeout(15000),
-        });
-        
-        console.log(`[Scanner] Local proxy response: ${response.status}`);
-      } catch (proxyErr) {
-        console.log("[Scanner] Local proxy failed, trying direct backend");
-        
-        // Fallback to direct backend call
-        const directUrl = currentEndpoint === "lunch" 
-          ? `${API_BASE_URL}/lunch` 
-          : `${API_BASE_URL}/scan`;
-          
-        response = await fetch(directUrl, {
-          method: "POST",
-          headers: { 
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*"
-          },
-          body: JSON.stringify({ token, qrData: decodedText }),
-          signal: AbortSignal.timeout(15000),
-          mode: 'cors'
-        });
-        
-        console.log(`[Scanner] Direct backend response: ${response.status}`);
-      }
-
+      console.log(`[Scanner] Azure backend response: ${response.status}`);
+      
       const latency = Date.now() - startTime;
       setLastLatency(latency);
       if (latency > 2000) {
         console.warn(`[Scanner] Slow Response: ${latency}ms for ${decodedText}`);
       }
 
-      console.log(`[Scanner] POST ${url} ${response.status} in ${latency}ms`);
+      console.log(`[Scanner] POST ${directUrl} ${response.status} in ${latency}ms`);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => null);
@@ -548,19 +516,24 @@ export default function ScannerPage() {
               formats={["qr_code"]}
               components={{ 
                 finder: false,
-                torch: false
+                torch: false,
+                zoom: false
               }}
+              allowMultiple={false}
               styles={{
                 container: { 
                   width: "100%", 
                   height: "100%", 
                   padding: 0,
-                  backgroundColor: "transparent"
+                  backgroundColor: "transparent",
+                  borderRadius: "16px",
+                  overflow: "hidden"
                 },
                 video: { 
                   objectFit: "cover" as const,
                   width: "100%",
-                  height: "100%"
+                  height: "100%",
+                  borderRadius: "16px"
                 },
               }}
             />

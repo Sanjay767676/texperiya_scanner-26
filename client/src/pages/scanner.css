@@ -188,10 +188,12 @@
   object-fit: cover !important;
 }
 
-/* Hide video controls and play button on mobile - Enhanced */
+/* Hide ALL video controls and play/pause buttons - ENHANCED FOR MOBILE */
 .camera-wrapper video::-webkit-media-controls {
   display: none !important;
   -webkit-appearance: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
 }
 
 .camera-wrapper video::-webkit-media-controls-panel {
@@ -212,23 +214,14 @@
 
 .camera-wrapper video::-webkit-media-controls-overlay-play-button {
   display: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
 }
 
 .camera-wrapper video::-webkit-media-controls-fullscreen-button {
   display: none !important;
 }
 
-.camera-wrapper video {
-  -webkit-playsinline: true;
-  -webkit-appearance: none;
-  pointer-events: auto;
-}
-
-.camera-wrapper video[poster] {
-  object-fit: cover !important;
-}
-
-/* Force remove all possible video controls */
 .camera-wrapper video::-webkit-media-controls-enclosure {
   display: none !important;
 }
@@ -243,6 +236,46 @@
 
 .camera-wrapper video::-webkit-media-controls-time-remaining-display {
   display: none !important;
+}
+
+/* Force video properties for mobile */
+.camera-wrapper video {
+  -webkit-playsinline: true !important;
+  playsinline: true !important;
+  -webkit-appearance: none !important;
+  pointer-events: auto;
+  background: transparent !important;
+  object-fit: cover !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.camera-wrapper video[poster] {
+  object-fit: cover !important;
+}
+
+/* Additional mobile fixes */
+.camera-wrapper video[controls] {
+  -webkit-appearance: none !important;
+}
+
+/* Force remove React QR Scanner's own controls */
+.camera-wrapper [role="button"],
+.camera-wrapper button {
+  display: none !important;
+}
+
+/* Hide any overlay buttons */
+.camera-wrapper > div > div > button {
+  display: none !important;
+}
+
+.camera-wrapper * {
+  pointer-events: none !important;
+}
+
+.camera-wrapper {
+  pointer-events: auto !important;
 }
 
 /* Camera placeholder styles */
