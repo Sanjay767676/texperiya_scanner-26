@@ -9,6 +9,18 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
 
+  // Add CORS headers for all routes
+  app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(200);
+    } else {
+      next();
+    }
+  });
+
   app.get("/api/health", async (_req, res) => {
     try {
       console.log(`[Proxy] Checking backend health: ${AZURE_BASE_URL}`);
