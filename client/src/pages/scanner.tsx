@@ -76,6 +76,7 @@ export default function ScannerPage() {
   const [lastResponse, setLastResponse] = useState<any>(null);
   const [lastLatency, setLastLatency] = useState<number>(0);
   const [currentEndpoint, setCurrentEndpoint] = useState<EndpointType>("attendance");
+  const [cameraPermissionGranted, setCameraPermissionGranted] = useState<boolean>(false);
   
   const { toast } = useToast();
 
@@ -96,16 +97,69 @@ export default function ScannerPage() {
 
   const checkHealth = useCallback(async () => {
     try {
-      // Hit local proxy health check (vibration for CORS reliability)
-      const response = await fetch("/api/health", { signal: AbortSignal.timeout(5000) });
+      // Check local server first (for development)
+      let response = await fetch("/api/health", { signal: AbortSignal.timeout(3000) });
+      
+      if (response.ok) {
+        setBackendStatus("connected");
+        return;
+      }
+      
+      // If local fails, try direct backend URL (for production)
+      response = await fetch(`${API_BASE_URL}/health`, { 
+        signal: AbortSignal.timeout(5000),
+        mode: 'cors'
+      });
+      
       if (response.ok) {
         setBackendStatus("connected");
       } else {
-        // If the local proxy exists but Azure is down, backend status reflects that
         setBackendStatus("unreachable");
       }
     } catch (err) {
+      console.warn("[Scanner] Backend health check failed:", err);
       setBackendStatus("unreachable");
+    }
+  }, [API_BASE_URL]);
+
+  const checkCameraPermission = useCallback(async () => {
+    try {
+      // Check if camera permission is already granted
+      const permission = await navigator.permissions.query({ name: 'camera' as PermissionName });
+      
+      if (permission.state === 'granted') {
+        setCameraPermissionGranted(true);
+        setScanResult({ status: "scanning" });
+        return true;
+      } else if (permission.state === 'denied') {
+        setScanResult({ 
+          status: "camera_error", 
+          message: "Camera permission denied. Please enable in browser settings." 
+        });
+        return false;
+      }
+      
+      // Try to request permission by accessing camera
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: "environment" } 
+        });
+        // Stop the stream immediately, we just needed to check permission
+        stream.getTracks().forEach(track => track.stop());
+        setCameraPermissionGranted(true);
+        setScanResult({ status: "scanning" });
+        return true;
+      } catch (mediaErr) {
+        setScanResult({ 
+          status: "camera_error", 
+          message: "Requesting camera permission..." 
+        });
+        return false;
+      }
+    } catch (err) {
+      console.warn("[Scanner] Camera permission check failed:", err);
+      setScanResult({ status: "camera_error", message: "Requesting camera permission..." });
+      return false;
     }
   }, []);
 
@@ -171,6 +225,11 @@ export default function ScannerPage() {
 
   useEffect(() => {
     mountedRef.current = true;
+    
+    // Check camera permissions first
+    checkCameraPermission();
+    
+    // Check backend health
     checkHealth();
 
     const healthInterval = setInterval(checkHealth, 30000);
@@ -183,7 +242,7 @@ export default function ScannerPage() {
       if (bannerTimeoutRef.current) clearTimeout(bannerTimeoutRef.current);
       if (retryIntervalRef.current) clearInterval(retryIntervalRef.current);
     };
-  }, [processOfflineQueue, checkHealth]);
+  }, [processOfflineQueue, checkHealth, checkCameraPermission]);
 
   const processResponse = useCallback((data: any, statusCode?: number) => {
     setLastResponse(data);
@@ -413,36 +472,68 @@ export default function ScannerPage() {
 
       <div className="scanner-body">
         <div className="camera-wrapper" data-testid="camera-container">
-          <Scanner
-            onScan={handleScan}
-            onError={(err: any) => {
-              if (mountedRef.current) {
-                // Show skeleton loader for camera permission instead of error
-                setScanResult({
-                  status: "camera_error",
-                  message: "Requesting camera permission...",
-                });
-              }
-            }}
-            paused={false}
-            scanDelay={100}
-            constraints={{ 
-              facingMode: "environment",
-              width: { ideal: 1280 },  
-              height: { ideal: 720 }
-            }}
-            formats={["qr_code"]}
-            components={{ finder: false }}
-            styles={{
-              container: { width: "100%", height: "100%", padding: 0 },
-              video: { 
-                objectFit: "cover" as const,
-                playsInline: true,
-                muted: true,
-                autoPlay: true
-              },
-            }}
-          />
+          {cameraPermissionGranted ? (
+            <Scanner
+              onScan={handleScan}
+              onError={(err: any) => {
+                if (mountedRef.current) {
+                  console.warn("[Scanner] Camera error:", err);
+                  setScanResult({
+                    status: "camera_error",
+                    message: "Camera initialization failed. Please refresh.",
+                  });
+                }
+              }}
+              paused={false}
+              scanDelay={100}
+              constraints={{ 
+                facingMode: "environment",
+                width: { ideal: 1280 },  
+                height: { ideal: 720 }
+              }}
+              formats={["qr_code"]}
+              components={{ 
+                finder: false,
+                torch: false
+              }}
+              styles={{
+                container: { 
+                  width: "100%", 
+                  height: "100%", 
+                  padding: 0,
+                  backgroundColor: "transparent"
+                },
+                video: { 
+                  objectFit: "cover" as const,
+                  width: "100%",
+                  height: "100%"
+                },
+              }}
+            />
+          ) : (
+            <div className="camera-placeholder">
+              {scanResult.status === "camera_error" && scanResult.message?.includes("denied") ? (
+                <div className="camera-denied">
+                  <div className="status-icon error-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="2" y="5" width="20" height="14" rx="2" />
+                      <line x1="2" y1="5" x2="22" y2="19" />
+                    </svg>
+                  </div>
+                  <p>Camera permission denied</p>
+                  <button onClick={() => window.location.reload()} className="retry-btn">
+                    Enable Camera
+                  </button>
+                </div>
+              ) : (
+                <div className="camera-loading-placeholder">
+                  <Skeleton className="w-full h-8 mb-2" />
+                  <Skeleton className="w-3/4 h-4 mb-1" />
+                  <Skeleton className="w-1/2 h-4" />
+                </div>
+              )}
+            </div>
+          )}
           <div className="scan-overlay">
             <div className="corner corner-tl" />
             <div className="corner corner-tr" />
