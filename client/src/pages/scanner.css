@@ -49,6 +49,46 @@
   gap: 10px;
 }
 
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.endpoint-selector {
+  display: flex;
+  gap: 4px;
+  background: var(--s-surface-2);
+  border-radius: 8px;
+  padding: 2px;
+  border: 1px solid var(--s-border);
+}
+
+.endpoint-btn {
+  background: transparent;
+  border: none;
+  color: var(--s-text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.endpoint-btn:hover {
+  color: var(--s-text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.endpoint-btn.active {
+  background: var(--s-accent);
+  color: white;
+  box-shadow: 0 2px 4px rgba(124, 108, 240, 0.3);
+}
+
 .header-logo {
   width: 32px;
   height: 32px;
@@ -138,6 +178,37 @@
 .camera-wrapper video {
   width: 100% !important;
   height: 100% !important;
+  object-fit: cover !important;
+}
+
+/* Hide video controls and play button on mobile */
+.camera-wrapper video::-webkit-media-controls {
+  display: none !important;
+}
+
+.camera-wrapper video::-webkit-media-controls-panel {
+  display: none !important;
+}
+
+.camera-wrapper video::-webkit-media-controls-play-button {
+  display: none !important;
+}
+
+.camera-wrapper video::-webkit-media-controls-start-playback-button {
+  display: none !important;
+}
+
+.camera-wrapper video {
+  -webkit-playsinline: true;
+  -webkit-appearance: none;
+}
+
+/* Additional mobile video fixes */
+.camera-wrapper video::-webkit-media-controls-overlay-enclosure {
+  display: none !important;
+}
+
+.camera-wrapper video[poster] {
   object-fit: cover !important;
 }
 
@@ -350,6 +421,46 @@
 }
 
 .retry-btn:active { opacity: 0.75; }
+
+/* Camera skeleton loading styles */
+.camera-loading {
+  align-items: flex-start !important;
+  gap: 16px !important;
+}
+
+.camera-skeleton {
+  flex-shrink: 0;
+}
+
+.camera-skeleton .w-full {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.camera-skeleton .w-3\/4 {
+  width: 75%;
+  margin-bottom: 4px;
+}
+
+.camera-skeleton .w-1\/2 {
+  width: 50%;
+}
+
+.camera-skeleton .h-8 {
+  height: 32px;
+}
+
+.camera-skeleton .h-4 {
+  height: 16px;
+}
+
+.camera-skeleton .mb-2 {
+  margin-bottom: 8px;
+}
+
+.camera-skeleton .mb-1 {
+  margin-bottom: 4px;
+}
 
 @media (max-width: 380px) {
   .scanner-header { padding: 8px 12px; }

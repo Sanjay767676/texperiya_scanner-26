@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Scanner } from "@yudiel/react-qr-scanner";
+import { useToast } from "@/hooks/use-toast";
+import { Skeleton } from "@/components/ui/skeleton";
 import scannerLogo from "@assets/skeleton.png";
 import "./scanner.css";
 
 type ScanStatus = "scanning" | "processing" | "success" | "already_scanned" | "invalid" | "error" | "camera_error";
+type EndpointType = "attendance" | "lunch";
 
 interface ScanResult {
   status: ScanStatus;
@@ -72,6 +75,9 @@ export default function ScannerPage() {
   const [debugMode, setDebugMode] = useState(false);
   const [lastResponse, setLastResponse] = useState<any>(null);
   const [lastLatency, setLastLatency] = useState<number>(0);
+  const [currentEndpoint, setCurrentEndpoint] = useState<EndpointType>("attendance");
+  
+  const { toast } = useToast();
 
   const isProcessingRef = useRef(false);
   const lastScannedRef = useRef<string>("");
@@ -90,17 +96,18 @@ export default function ScannerPage() {
 
   const checkHealth = useCallback(async () => {
     try {
-      // Direct call to backend health check
-      const response = await fetch(`${API_BASE_URL}/health`, { signal: AbortSignal.timeout(5000) });
+      // Hit local proxy health check (vibration for CORS reliability)
+      const response = await fetch("/api/health", { signal: AbortSignal.timeout(5000) });
       if (response.ok) {
         setBackendStatus("connected");
       } else {
+        // If the local proxy exists but Azure is down, backend status reflects that
         setBackendStatus("unreachable");
       }
     } catch (err) {
       setBackendStatus("unreachable");
     }
-  }, [API_BASE_URL]);
+  }, []);
 
   const resetScanner = useCallback(() => {
     if (!mountedRef.current) return;
@@ -137,11 +144,12 @@ export default function ScannerPage() {
     for (const item of queue) {
       try {
         const token = extractToken(item.qrData);
-        const response = await fetch(`${API_BASE_URL}/scan`, {
+        const url = "/api/scan"; // Default to scan for offline queue
+        const response = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token }),
-          signal: AbortSignal.timeout(5000)
+          body: JSON.stringify({ token, qrData: item.qrData }),
+          signal: AbortSignal.timeout(15000)
         });
 
         if (response.ok) {
@@ -179,54 +187,97 @@ export default function ScannerPage() {
 
   const processResponse = useCallback((data: any, statusCode?: number) => {
     setLastResponse(data);
-    const st = (data?.status || "").toLowerCase();
-    const errMsg = data?.error || data?.message || "";
+    const message = data?.message || data?.error || "";
     const studentName = data?.studentName || data?.name || "";
     const senderType = data?.senderType || "";
-    const displayName = studentName || senderType || "Attendee";
 
     if (bannerTimeoutRef.current) {
       clearTimeout(bannerTimeoutRef.current);
     }
 
-    if (statusCode === 409) {
-      setScanResult({ status: "already_scanned", message: "⚠️ ALREADY MARKED" });
-      playWarningSound();
-      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
-      return;
-    }
-
-    if (!data || typeof data !== 'object') {
-      setScanResult({ status: "error", message: "Invalid Server Response" });
-      playErrorSound();
-      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
-      return;
-    }
-
-    if (data.success === true || st === "success" || st === "ok") {
-      setScanResult({
-        status: "success",
-        name: displayName,
-        message: `${senderType ? `[${senderType}]` : ""} Attendance Marked`.trim(),
+    // Handle specific backend messages according to requirements
+    const messageText = message.toLowerCase();
+    
+    if (messageText.includes("marked status")) {
+      // Attendance Scans - Success
+      toast({
+        title: "Attendance Marked",
+        description: studentName ? `${studentName} - Attendance recorded` : "Attendance successfully recorded",
+        variant: "default"
       });
+      setScanResult({ status: "success", name: studentName, message: "Attendance Marked" });
       setScanCount((c) => c + 1);
       playSuccessSound();
       triggerHaptic();
-      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
-    } else if (st === "already_scanned" || st === "duplicate" || /already/i.test(errMsg)) {
-      setScanResult({ status: "already_scanned", message: errMsg || "⚠️ ALREADY MARKED" });
+    } else if (messageText.includes("already marked")) {
+      // Attendance Scans - Warning
+      toast({
+        title: "Already Scanned", 
+        description: "This attendance has already been marked",
+        variant: "destructive"
+      });
+      setScanResult({ status: "already_scanned", message: "Already Marked" });
       playWarningSound();
-      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
-    } else if (st === "invalid" || /invalid/i.test(errMsg)) {
-      setScanResult({ status: "invalid", message: errMsg || "Invalid QR Code" });
-      playErrorSound();
-      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
+    } else if (messageText.includes("lunch token marked")) {
+      // Lunch Scans - Success
+      toast({
+        title: "Lunch Token Marked",
+        description: studentName ? `${studentName} - Lunch token recorded` : "Lunch token successfully recorded", 
+        variant: "default"
+      });
+      setScanResult({ status: "success", name: studentName, message: "Lunch Token Marked" });
+      setScanCount((c) => c + 1);
+      playSuccessSound();
+      triggerHaptic();
+    } else if (messageText.includes("luchh token alredy availed") || messageText.includes("lunch token already availed")) {
+      // Lunch Scans - Warning (keeping the original typo for API compatibility)
+      toast({
+        title: "Already Availed",
+        description: "This lunch token has already been used",
+        variant: "destructive"
+      });
+      setScanResult({ status: "already_scanned", message: "Already Availed" });
+      playWarningSound();
+    } else if (statusCode === 409) {
+      // Fallback for 409 status code
+      toast({
+        title: "Already Processed",
+        description: message || "This item has already been processed",
+        variant: "destructive"
+      });
+      setScanResult({ status: "already_scanned", message: "Already Processed" });
+      playWarningSound();
+    } else if (data?.success === true || messageText.includes("success")) {
+      // Generic success
+      toast({
+        title: "Success",
+        description: message || "Successfully processed",
+        variant: "default"
+      });
+      setScanResult({ status: "success", name: studentName, message: "Success" });
+      setScanCount((c) => c + 1);
+      playSuccessSound();
+      triggerHaptic();
     } else {
-      setScanResult({ status: "error", message: errMsg || "Something went wrong" });
+      // Error cases
+      const errorTitle = messageText.includes("invalid") ? "Invalid QR Code" : "Error";
+      const errorDesc = message || "Something went wrong";
+      
+      toast({
+        title: errorTitle,
+        description: errorDesc,
+        variant: "destructive"
+      });
+      setScanResult({ 
+        status: messageText.includes("invalid") ? "invalid" : "error", 
+        message: errorDesc 
+      });
       playErrorSound();
-      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
     }
-  }, [resetScanner, triggerHaptic]);
+
+    // Reset scanner after 2 seconds
+    bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
+  }, [resetScanner, triggerHaptic, toast]);
 
   const handleScan = useCallback(async (results: any[], isRetry = false) => {
     if (!results || results.length === 0 || (isProcessingRef.current && !isRetry)) return;
@@ -248,11 +299,12 @@ export default function ScannerPage() {
     const startTime = Date.now();
     try {
       const token = extractToken(decodedText);
-      const response = await fetch(`${API_BASE_URL}/scan`, {
+      const url = currentEndpoint === "lunch" ? "/api/lunch" : "/api/scan";
+      const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token }),
-        signal: AbortSignal.timeout(5000),
+        body: JSON.stringify({ token, qrData: decodedText }),
+        signal: AbortSignal.timeout(20000),
       });
 
       const latency = Date.now() - startTime;
@@ -261,7 +313,7 @@ export default function ScannerPage() {
         console.warn(`[Scanner] Slow Response: ${latency}ms for ${decodedText}`);
       }
 
-      console.log(`[Scanner] POST /api/scan ${response.status} in ${latency}ms`);
+      console.log(`[Scanner] POST ${url} ${response.status} in ${latency}ms`);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => null);
@@ -335,9 +387,27 @@ export default function ScannerPage() {
             </div>
           </div>
         </div>
-        <div className="scan-counter" data-testid="text-scan-count">
-          <span className="counter-number">{scanCount}</span>
-          <span className="counter-label">scanned</span>
+        <div className="header-controls">
+          <div className="endpoint-selector">
+            <button 
+              className={`endpoint-btn ${currentEndpoint === "attendance" ? "active" : ""}`}
+              onClick={() => setCurrentEndpoint("attendance")}
+              data-testid="btn-attendance"
+            >
+              Attendance
+            </button>
+            <button 
+              className={`endpoint-btn ${currentEndpoint === "lunch" ? "active" : ""}`}
+              onClick={() => setCurrentEndpoint("lunch")}
+              data-testid="btn-lunch"
+            >
+              Lunch
+            </button>
+          </div>
+          <div className="scan-counter" data-testid="text-scan-count">
+            <span className="counter-number">{scanCount}</span>
+            <span className="counter-label">scanned</span>
+          </div>
         </div>
       </header>
 
@@ -347,20 +417,30 @@ export default function ScannerPage() {
             onScan={handleScan}
             onError={(err: any) => {
               if (mountedRef.current) {
+                // Show skeleton loader for camera permission instead of error
                 setScanResult({
                   status: "camera_error",
-                  message: (typeof err === "string" ? err : err?.message) || "Camera access denied",
+                  message: "Requesting camera permission...",
                 });
               }
             }}
             paused={false}
             scanDelay={100}
-            constraints={{ facingMode: "environment" }}
+            constraints={{ 
+              facingMode: "environment",
+              width: { ideal: 1280 },  
+              height: { ideal: 720 }
+            }}
             formats={["qr_code"]}
             components={{ finder: false }}
             styles={{
               container: { width: "100%", height: "100%", padding: 0 },
-              video: { objectFit: "cover" as const },
+              video: { 
+                objectFit: "cover" as const,
+                playsInline: true,
+                muted: true,
+                autoPlay: true
+              },
             }}
           />
           <div className="scan-overlay">
@@ -446,15 +526,16 @@ export default function ScannerPage() {
           )}
 
           {scanResult.status === "camera_error" && (
-            <div className="status-row result-anim" data-testid="status-camera-error">
-              <div className="status-icon error-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2" /><line x1="2" y1="5" x2="22" y2="19" /></svg>
+            <div className="status-row result-anim camera-loading" data-testid="status-camera-error">
+              <div className="camera-skeleton">
+                <Skeleton className="w-full h-8 mb-2" />
+                <Skeleton className="w-3/4 h-4 mb-1" />
+                <Skeleton className="w-1/2 h-4" />
               </div>
               <div className="status-info">
-                <span className="status-primary">Camera Access Required</span>
-                <span className="status-secondary">{scanResult.message}</span>
+                <span className="status-primary">Camera Initializing...</span>
+                <span className="status-secondary">Please allow camera permission when prompted</span>
               </div>
-              <button className="retry-btn" data-testid="button-retry-camera" onClick={() => window.location.reload()}>Retry</button>
             </div>
           )}
         </div>

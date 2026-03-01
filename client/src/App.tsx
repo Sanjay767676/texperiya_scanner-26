@@ -1,5 +1,6 @@
 import ScannerPage from "@/pages/scanner";
 import { OpeningAnimation } from "@/components/OpeningAnimation";
+import { Toaster } from "@/components/ui/toaster";
 import "@/pages/scanner.css";
 
 function App() {
@@ -7,6 +8,7 @@ function App() {
     <>
       <OpeningAnimation />
       <ScannerPage />
+      <Toaster />
     </>
   );
 }
