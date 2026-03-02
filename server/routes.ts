@@ -28,10 +28,21 @@ async function proxyScanRequest(
   qrData: string | undefined,
 ) {
   try {
-    const response = await upstreamApi.post(endpoint, {
+    const payload = {
       token: token.trim(),
       qrData,
-    });
+    };
+
+    const style = (process.env.TEXPERIA_ENDPOINT_STYLE || "auto").toLowerCase();
+    const rootEndpoint = endpoint === "/api/lunch" ? "/lunch" : "/scan";
+    const primaryEndpoint = style === "api" ? endpoint : rootEndpoint;
+    const secondaryEndpoint = primaryEndpoint === endpoint ? rootEndpoint : endpoint;
+
+    let response = await upstreamApi.post(primaryEndpoint, payload);
+    if (response.status === 404) {
+      response = await upstreamApi.post(secondaryEndpoint, payload);
+    }
+
     return {
       statusCode: response.status,
       body: response.data,

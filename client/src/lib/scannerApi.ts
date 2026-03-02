@@ -84,6 +84,14 @@ function mapResult(httpStatus: number, body: ScannerApiResponse): ScanUiResult {
     return { status: "error", httpStatus, message };
   }
 
+  if (httpStatus === 404) {
+    return {
+      status: "error",
+      httpStatus,
+      message: "Scanner endpoint not found on backend",
+    };
+  }
+
   return { status: "error", httpStatus, message };
 }
 

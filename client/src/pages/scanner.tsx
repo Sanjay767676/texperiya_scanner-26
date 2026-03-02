@@ -20,6 +20,7 @@ interface ScanResult {
   name?: string;
   message?: string;
   scanType?: EndpointType;
+  senderType?: "CS" | "NCS";
 }
 
 interface QueuedScan {
@@ -244,9 +245,10 @@ export default function ScannerPage() {
       });
       setScanResult({
         status: "success",
-        name: result.message,
+        name: result.message || "Success",
         message: result.message,
         scanType,
+        senderType: result.data?.senderType,
       });
       setScanCount((c) => c + 1);
       playSuccessSound();
@@ -293,13 +295,13 @@ export default function ScannerPage() {
 
     if (result.status === "unauthorized") {
       toast({
-        title: "Scanner Unauthorized",
-        description: "Security header rejected. Verify scanner secret configuration.",
+        title: "Security Error",
+        description: "Invalid scanner secret",
         variant: "destructive",
       });
       setScanResult({
         status: "error",
-        message: "Unauthorized scanner request. Check scanner secret.",
+        message: "Security Error: Invalid Secret",
       });
       playErrorSound();
       bannerTimeoutRef.current = setTimeout(resetScanner, 3000);
@@ -307,11 +309,14 @@ export default function ScannerPage() {
     }
 
     toast({
-      title: "Error",
-      description: result.message || "Something went wrong",
+      title: "Connection Error",
+      description: result.message || `Connection Error: ${result.httpStatus || "Network"}`,
       variant: "destructive",
     });
-    setScanResult({ status: "error", message: result.message || "Request failed" });
+    setScanResult({
+      status: "error",
+      message: result.message || `Connection Error: ${result.httpStatus || "Network"}`,
+    });
     playErrorSound();
     bannerTimeoutRef.current = setTimeout(resetScanner, 2500);
   }, [resetScanner, toast, triggerHaptic]);
@@ -521,7 +526,8 @@ export default function ScannerPage() {
               <div className="status-info">
                 <span className="status-primary">{scanResult.name}</span>
                 <span className="status-secondary">
-                  {scanResult.scanType === "lunch" ? "Lunch Marked" : "Attendance Marked"}
+                  {scanResult.scanType === "lunch" ? "Marked lunch" : "Marked attendance"}
+                  {scanResult.senderType ? ` | Type: ${scanResult.senderType}` : ""}
                 </span>
               </div>
             </div>

@@ -26,10 +26,23 @@ export default async function handler(req: any, res: any) {
       validateStatus: () => true,
     });
 
-    const response = await upstreamApi.post("/api/lunch", {
+    const payload = {
       token: token.trim(),
       qrData: req.body?.qrData,
-    });
+    };
+
+    const style = (process.env.TEXPERIA_ENDPOINT_STYLE || "auto").toLowerCase();
+    const candidates =
+      style === "api"
+        ? ["/api/lunch", "/lunch"]
+        : style === "root"
+          ? ["/lunch", "/api/lunch"]
+          : ["/lunch", "/api/lunch"];
+
+    let response = await upstreamApi.post(candidates[0], payload);
+    if (response.status === 404) {
+      response = await upstreamApi.post(candidates[1], payload);
+    }
     return res.status(response.status).json(response.data);
   } catch (error: any) {
     const statusCode = error?.response?.status ?? 502;
