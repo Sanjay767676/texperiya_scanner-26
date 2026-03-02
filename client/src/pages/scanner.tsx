@@ -2,22 +2,31 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { Scanner } from "@yudiel/react-qr-scanner";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  checkScannerHealth,
+  SCANNER_API_BASE_URL,
+  submitScan,
+  type ScanUiResult,
+  type ScannerMode,
+} from "@/lib/scannerApi";
 import scannerLogo from "@assets/skeleton.png";
 import "./scanner.css";
 
 type ScanStatus = "scanning" | "processing" | "success" | "already_scanned" | "invalid" | "error" | "camera_error";
-type EndpointType = "attendance" | "lunch";
+type EndpointType = ScannerMode;
 
 interface ScanResult {
   status: ScanStatus;
   name?: string;
   message?: string;
+  scanType?: EndpointType;
 }
 
 interface QueuedScan {
   qrData: string;
   timestamp: number;
   retries: number;
+  endpoint: EndpointType;
 }
 
 function playTone(frequency: number, duration: number, type: OscillatorType = "sine") {
@@ -89,37 +98,10 @@ export default function ScannerPage() {
   const offlineQueueRef = useRef<QueuedScan[]>([]);
   const retryIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://texperia-backend-anbub8brccgzfzd9.southindia-01.azurewebsites.net";
-
-  useEffect(() => {
-    console.log(`[Scanner] App Startup - API Base URL: ${API_BASE_URL}`);
-  }, [API_BASE_URL]);
-
   const checkHealth = useCallback(async () => {
-    try {
-      console.log(`[Scanner] Checking Azure backend health: ${API_BASE_URL}`);
-      
-      const response = await fetch(`${API_BASE_URL}/health`, { 
-        signal: AbortSignal.timeout(8000),
-        mode: 'cors',
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        console.log("[Scanner] Azure backend health check passed:", data);
-        setBackendStatus("connected");
-      } else {
-        console.warn(`[Scanner] Backend responded with status: ${response.status}`);
-        setBackendStatus("unreachable");
-      }
-    } catch (err) {
-      console.warn("[Scanner] Azure backend health check failed:", err);
-      setBackendStatus("unreachable");
-    }
-  }, [API_BASE_URL]);
+    const healthy = await checkScannerHealth();
+    setBackendStatus(healthy ? "connected" : "unreachable");
+  }, []);
 
   const checkCameraPermission = useCallback(async () => {
     try {
@@ -176,13 +158,16 @@ export default function ScannerPage() {
     } catch (_) { }
   }, []);
 
-  const addToOfflineQueue = useCallback((qrData: string) => {
-    const exists = offlineQueueRef.current.some(item => item.qrData === qrData);
+  const addToOfflineQueue = useCallback((qrData: string, endpoint: EndpointType) => {
+    const exists = offlineQueueRef.current.some(
+      (item) => item.qrData === qrData && item.endpoint === endpoint,
+    );
     if (!exists) {
       offlineQueueRef.current.push({
         qrData,
         timestamp: Date.now(),
-        retries: 0
+        retries: 0,
+        endpoint,
       });
       console.log(`[Scanner] Added to offline queue: ${qrData}`);
     }
@@ -197,20 +182,11 @@ export default function ScannerPage() {
     for (const item of queue) {
       try {
         const token = extractToken(item.qrData);
-        const url = "/api/scan"; // Default to scan for offline queue
-        const response = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token, qrData: item.qrData }),
-          signal: AbortSignal.timeout(15000)
-        });
+        const result = await submitScan(item.endpoint, { token, qrData: item.qrData });
 
-        if (response.ok) {
-          const data = await response.json();
-          if (data.success) {
-            setScanCount((c) => c + 1);
-            console.log(`[Scanner] Offline scan processed: ${item.qrData}`);
-          }
+        if (result.status === "success") {
+          setScanCount((c) => c + 1);
+          console.log(`[Scanner] Offline scan processed: ${item.qrData}`);
         } else if (item.retries < 3) {
           offlineQueueRef.current.push({ ...item, retries: item.retries + 1 });
         }
@@ -243,99 +219,95 @@ export default function ScannerPage() {
     };
   }, [processOfflineQueue, checkHealth, checkCameraPermission]);
 
-  const processResponse = useCallback((data: any, statusCode?: number) => {
-    setLastResponse(data);
-    const message = data?.message || data?.error || "";
-    const studentName = data?.studentName || data?.name || "";
-    const senderType = data?.senderType || "";
+  const processResponse = useCallback((result: ScanUiResult) => {
+    setLastResponse(result);
 
     if (bannerTimeoutRef.current) {
       clearTimeout(bannerTimeoutRef.current);
     }
 
-    // Handle specific backend messages according to requirements
-    const messageText = message.toLowerCase();
-    
-    if (messageText.includes("marked status")) {
-      // Attendance Scans - Success
+    if (result.status === "success") {
+      const scanType = result.data?.scanType || currentEndpoint;
+      const successTitle = scanType === "lunch" ? "Lunch Marked" : "Attendance Marked";
+
       toast({
-        title: "Attendance Marked",
-        description: studentName ? `${studentName} - Attendance recorded` : "Attendance successfully recorded",
-        variant: "default"
+        title: successTitle,
+        description: result.message || successTitle,
+        variant: "default",
       });
-      setScanResult({ status: "success", name: studentName, message: "Attendance Marked" });
+      setScanResult({
+        status: "success",
+        name: result.message,
+        message: result.message,
+        scanType,
+      });
       setScanCount((c) => c + 1);
       playSuccessSound();
       triggerHaptic();
-    } else if (messageText.includes("already marked")) {
-      // Attendance Scans - Warning
-      toast({
-        title: "Already Scanned", 
-        description: "This attendance has already been marked",
-        variant: "destructive"
-      });
-      setScanResult({ status: "already_scanned", message: "Already Marked" });
-      playWarningSound();
-    } else if (messageText.includes("lunch token marked")) {
-      // Lunch Scans - Success
-      toast({
-        title: "Lunch Token Marked",
-        description: studentName ? `${studentName} - Lunch token recorded` : "Lunch token successfully recorded", 
-        variant: "default"
-      });
-      setScanResult({ status: "success", name: studentName, message: "Lunch Token Marked" });
-      setScanCount((c) => c + 1);
-      playSuccessSound();
-      triggerHaptic();
-    } else if (messageText.includes("luchh token alredy availed") || messageText.includes("lunch token already availed")) {
-      // Lunch Scans - Warning (keeping the original typo for API compatibility)
-      toast({
-        title: "Already Availed",
-        description: "This lunch token has already been used",
-        variant: "destructive"
-      });
-      setScanResult({ status: "already_scanned", message: "Already Availed" });
-      playWarningSound();
-    } else if (statusCode === 409) {
-      // Fallback for 409 status code
-      toast({
-        title: "Already Processed",
-        description: message || "This item has already been processed",
-        variant: "destructive"
-      });
-      setScanResult({ status: "already_scanned", message: "Already Processed" });
-      playWarningSound();
-    } else if (data?.success === true || messageText.includes("success")) {
-      // Generic success
-      toast({
-        title: "Success",
-        description: message || "Successfully processed",
-        variant: "default"
-      });
-      setScanResult({ status: "success", name: studentName, message: "Success" });
-      setScanCount((c) => c + 1);
-      playSuccessSound();
-      triggerHaptic();
-    } else {
-      // Error cases
-      const errorTitle = messageText.includes("invalid") ? "Invalid QR Code" : "Error";
-      const errorDesc = message || "Something went wrong";
-      
-      toast({
-        title: errorTitle,
-        description: errorDesc,
-        variant: "destructive"
-      });
-      setScanResult({ 
-        status: messageText.includes("invalid") ? "invalid" : "error", 
-        message: errorDesc 
-      });
-      playErrorSound();
+      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
+      return;
     }
 
-    // Reset scanner after 2 seconds
-    bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
-  }, [resetScanner, triggerHaptic, toast]);
+    if (result.status === "already_marked") {
+      toast({
+        title: "Already Marked",
+        description: result.message || "This QR has already been processed",
+        variant: "destructive",
+      });
+      setScanResult({ status: "already_scanned", message: result.message });
+      playWarningSound();
+      bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
+      return;
+    }
+
+    if (result.status === "wrong_mode") {
+      toast({
+        title: "Wrong Scanner Mode",
+        description: result.message,
+        variant: "destructive",
+      });
+      setScanResult({ status: "error", message: "Wrong scanner mode for this QR" });
+      playErrorSound();
+      bannerTimeoutRef.current = setTimeout(resetScanner, 2500);
+      return;
+    }
+
+    if (result.status === "invalid_qr") {
+      toast({
+        title: "Invalid QR Code",
+        description: result.message || "Invalid token format",
+        variant: "destructive",
+      });
+      setScanResult({ status: "invalid", message: result.message });
+      playErrorSound();
+      bannerTimeoutRef.current = setTimeout(resetScanner, 2500);
+      return;
+    }
+
+    if (result.status === "unauthorized") {
+      toast({
+        title: "Scanner Unauthorized",
+        description: "Security header rejected. Verify scanner secret configuration.",
+        variant: "destructive",
+      });
+      setScanResult({
+        status: "error",
+        message: "Unauthorized scanner request. Check scanner secret.",
+      });
+      playErrorSound();
+      bannerTimeoutRef.current = setTimeout(resetScanner, 3000);
+      return;
+    }
+
+    toast({
+      title: "Error",
+      description: result.message || "Something went wrong",
+      variant: "destructive",
+    });
+    setScanResult({ status: "error", message: result.message || "Request failed" });
+    playErrorSound();
+    bannerTimeoutRef.current = setTimeout(resetScanner, 2500);
+  }, [currentEndpoint, resetScanner, toast, triggerHaptic]);
 
   const handleScan = useCallback(async (results: any[], isRetry = false) => {
     if (!results || results.length === 0 || (isProcessingRef.current && !isRetry)) return;
@@ -358,67 +330,24 @@ export default function ScannerPage() {
     try {
       const token = extractToken(decodedText);
       console.log(`[Scanner] Scanning token: ${token} using endpoint: ${currentEndpoint}`);
-      
-      // Direct Azure backend call
-      const directUrl = currentEndpoint === "lunch" 
-        ? `${API_BASE_URL}/lunch` 
-        : `${API_BASE_URL}/scan`;
-        
-      const response = await fetch(directUrl, {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ token, qrData: decodedText }),
-        signal: AbortSignal.timeout(15000),
-        mode: 'cors'
-      });
-      
-      console.log(`[Scanner] Azure backend response: ${response.status}`);
-      
+
+      const result = await submitScan(currentEndpoint, { token, qrData: decodedText });
+
       const latency = Date.now() - startTime;
       setLastLatency(latency);
       if (latency > 2000) {
         console.warn(`[Scanner] Slow Response: ${latency}ms for ${decodedText}`);
       }
 
-      console.log(`[Scanner] POST ${directUrl} ${response.status} in ${latency}ms`);
+      if (!mountedRef.current) return;
+      console.log(`[Scanner] POST ${currentEndpoint} ${result.httpStatus} in ${latency}ms`);
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => null);
-        console.error(`[Scanner] Request failed with status: ${response.status}`, errorData);
-
-        // Auto-retry once after 1 second if not already retrying
-        if (!isRetry && response.status >= 500) {
-          console.log("[Scanner] Server error, retrying in 1s...");
-          setTimeout(() => handleScan([{ rawValue: decodedText }], true), 1000);
-          return;
-        }
-
-        if (errorData) {
-          processResponse(errorData, response.status);
-        } else {
-          let statusText = "";
-          if (response.status === 404) {
-            statusText = "Endpoint not found - Check backend URL";
-          } else if (response.status >= 500) {
-            statusText = "Server Error - Please try again";
-          } else if (response.status === 400) {
-            statusText = "Invalid QR Code format";
-          } else {
-            statusText = "Network Error - Check connection";
-          }
-          
-          setScanResult({ status: "error", message: statusText });
-          playErrorSound();
-          bannerTimeoutRef.current = setTimeout(resetScanner, 3000);
-        }
-      } else {
-        const data = await response.json();
-        if (!mountedRef.current) return;
-        console.log(`[Scanner] Success response:`, data);
-        processResponse(data);
+      if (!isRetry && (result.httpStatus >= 500 || result.httpStatus === 0)) {
+        console.log("[Scanner] Temporary backend issue, retrying in 1s...");
+        setTimeout(() => handleScan([{ rawValue: decodedText }], true), 1000);
+        return;
       }
+      processResponse(result);
     } catch (err: any) {
       if (!mountedRef.current) return;
       const latency = Date.now() - startTime;
@@ -426,20 +355,14 @@ export default function ScannerPage() {
 
       console.error(`[Scanner] Request failed: ${err.message} (${latency}ms)`);
 
-      // Auto-retry once after 1 second if not already retrying
-      if (!isRetry && err.name !== "AbortError") {
+      if (!isRetry) {
         console.log("[Scanner] Connection error, retrying in 1s...");
         setTimeout(() => handleScan([{ rawValue: decodedText }], true), 1000);
         return;
       }
 
-      const isNetworkError = err.name === "AbortError" || err.message?.includes("fetch") || err.message?.includes("network");
-      if (isNetworkError) {
-        addToOfflineQueue(decodedText);
-      }
-
-      const errMsg = err.name === "AbortError" ? "Request Timeout" : "Network Error";
-      setScanResult({ status: "error", message: errMsg });
+      addToOfflineQueue(decodedText, currentEndpoint);
+      setScanResult({ status: "error", message: "Network Error" });
       playErrorSound();
       bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
     } finally {
@@ -447,7 +370,7 @@ export default function ScannerPage() {
         isProcessingRef.current = false;
       }, 300);
     }
-  }, [resetScanner, processResponse, triggerHaptic, addToOfflineQueue]);
+  }, [currentEndpoint, resetScanner, processResponse, addToOfflineQueue]);
 
   const statusClass =
     scanResult.status === "success" ? "status-success" :
@@ -573,7 +496,7 @@ export default function ScannerPage() {
             <div className="debug-overlay">
               <h3>DEBUG MODE</h3>
               <p>Latency: {lastLatency}ms</p>
-              <p>Base URL: {API_BASE_URL}</p>
+              <p>Base URL: {SCANNER_API_BASE_URL || "same-origin (/api)"}</p>
               <pre>{JSON.stringify(lastResponse, null, 2)}</pre>
               <button onClick={() => setDebugMode(false)}>Close</button>
             </div>
@@ -602,7 +525,9 @@ export default function ScannerPage() {
               </div>
               <div className="status-info">
                 <span className="status-primary">{scanResult.name}</span>
-                <span className="status-secondary">Attendance Marked</span>
+                <span className="status-secondary">
+                  {scanResult.scanType === "lunch" ? "Lunch Marked" : "Attendance Marked"}
+                </span>
               </div>
             </div>
           )}

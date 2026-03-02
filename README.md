@@ -196,3 +196,19 @@ Tested & Verified:
 **Ready for high-speed, high-volume event scanning!** 🎉
 
 Questions? Check DEPLOYMENT.md or open an issue on GitHub.
+
+---
+
+## Environment Variables
+
+Use `.env` in production deployments:
+
+```env
+VITE_API_BASE_URL=
+TEXPERIA_API_BASE_URL=https://texperia-backend-anbub8brccgzfzd9.southindia-01.azurewebsites.net
+SCANNER_SECRET=TEX-2026-SECURE
+```
+
+- `VITE_API_BASE_URL`: Optional. Leave empty to use same-origin `/api/*` proxy routes.
+- `TEXPERIA_API_BASE_URL`: Your backend base URL used by this server proxy.
+- `SCANNER_SECRET`: Secret header value injected by the server when forwarding scan requests.
