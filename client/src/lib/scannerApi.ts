@@ -111,8 +111,24 @@ export async function submitScan(mode: ScannerMode, payload: ScanPayload): Promi
 export async function checkScannerHealth(): Promise<boolean> {
   try {
     const response = await scannerApi.get("/api/health");
-    return response.status >= 200 && response.status < 300;
-  } catch (_) {
-    return false;
+    if (response.status >= 200 && response.status < 300) return true;
+  } catch (_) {}
+
+  try {
+    const response = await scannerApi.get("/health");
+    if (response.status >= 200 && response.status < 300) return true;
+  } catch (_) {}
+
+  // If a custom base URL is configured and fails, still try same-origin health.
+  if (SCANNER_API_BASE_URL) {
+    try {
+      const response = await axios.get("/api/health", {
+        timeout: 5000,
+        validateStatus: () => true,
+      });
+      if (response.status >= 200 && response.status < 300) return true;
+    } catch (_) {}
   }
+
+  return false;
 }

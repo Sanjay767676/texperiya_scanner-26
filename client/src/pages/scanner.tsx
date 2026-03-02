@@ -29,6 +29,14 @@ interface QueuedScan {
   endpoint: EndpointType;
 }
 
+function inferEndpointFromToken(token: string): EndpointType {
+  const upper = token.trim().toUpperCase();
+  if (upper.startsWith("CSL-") || upper.startsWith("NCSL-")) {
+    return "lunch";
+  }
+  return "attendance";
+}
+
 function playTone(frequency: number, duration: number, type: OscillatorType = "sine") {
   try {
     const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -84,7 +92,6 @@ export default function ScannerPage() {
   const [debugMode, setDebugMode] = useState(false);
   const [lastResponse, setLastResponse] = useState<any>(null);
   const [lastLatency, setLastLatency] = useState<number>(0);
-  const [currentEndpoint, setCurrentEndpoint] = useState<EndpointType>("attendance");
   const [cameraPermissionGranted, setCameraPermissionGranted] = useState<boolean>(false);
   
   const { toast } = useToast();
@@ -219,7 +226,7 @@ export default function ScannerPage() {
     };
   }, [processOfflineQueue, checkHealth, checkCameraPermission]);
 
-  const processResponse = useCallback((result: ScanUiResult) => {
+  const processResponse = useCallback((result: ScanUiResult, requestMode: EndpointType) => {
     setLastResponse(result);
 
     if (bannerTimeoutRef.current) {
@@ -227,7 +234,7 @@ export default function ScannerPage() {
     }
 
     if (result.status === "success") {
-      const scanType = result.data?.scanType || currentEndpoint;
+      const scanType = result.data?.scanType || requestMode;
       const successTitle = scanType === "lunch" ? "Lunch Marked" : "Attendance Marked";
 
       toast({
@@ -307,7 +314,7 @@ export default function ScannerPage() {
     setScanResult({ status: "error", message: result.message || "Request failed" });
     playErrorSound();
     bannerTimeoutRef.current = setTimeout(resetScanner, 2500);
-  }, [currentEndpoint, resetScanner, toast, triggerHaptic]);
+  }, [resetScanner, toast, triggerHaptic]);
 
   const handleScan = useCallback(async (results: any[], isRetry = false) => {
     if (!results || results.length === 0 || (isProcessingRef.current && !isRetry)) return;
@@ -327,11 +334,12 @@ export default function ScannerPage() {
     }
 
     const startTime = Date.now();
+    const token = extractToken(decodedText);
+    const endpoint = inferEndpointFromToken(token);
     try {
-      const token = extractToken(decodedText);
-      console.log(`[Scanner] Scanning token: ${token} using endpoint: ${currentEndpoint}`);
+      console.log(`[Scanner] Scanning token: ${token} using endpoint: ${endpoint}`);
 
-      const result = await submitScan(currentEndpoint, { token, qrData: decodedText });
+      const result = await submitScan(endpoint, { token, qrData: decodedText });
 
       const latency = Date.now() - startTime;
       setLastLatency(latency);
@@ -340,14 +348,14 @@ export default function ScannerPage() {
       }
 
       if (!mountedRef.current) return;
-      console.log(`[Scanner] POST ${currentEndpoint} ${result.httpStatus} in ${latency}ms`);
+      console.log(`[Scanner] POST ${endpoint} ${result.httpStatus} in ${latency}ms`);
 
       if (!isRetry && (result.httpStatus >= 500 || result.httpStatus === 0)) {
         console.log("[Scanner] Temporary backend issue, retrying in 1s...");
         setTimeout(() => handleScan([{ rawValue: decodedText }], true), 1000);
         return;
       }
-      processResponse(result);
+      processResponse(result, endpoint);
     } catch (err: any) {
       if (!mountedRef.current) return;
       const latency = Date.now() - startTime;
@@ -361,7 +369,7 @@ export default function ScannerPage() {
         return;
       }
 
-      addToOfflineQueue(decodedText, currentEndpoint);
+      addToOfflineQueue(decodedText, endpoint);
       setScanResult({ status: "error", message: "Network Error" });
       playErrorSound();
       bannerTimeoutRef.current = setTimeout(resetScanner, 2000);
@@ -370,7 +378,7 @@ export default function ScannerPage() {
         isProcessingRef.current = false;
       }, 300);
     }
-  }, [currentEndpoint, resetScanner, processResponse, addToOfflineQueue]);
+  }, [resetScanner, processResponse, addToOfflineQueue]);
 
   const statusClass =
     scanResult.status === "success" ? "status-success" :
@@ -392,21 +400,8 @@ export default function ScannerPage() {
           </div>
         </div>
         <div className="header-controls">
-          <div className="endpoint-selector">
-            <button 
-              className={`endpoint-btn ${currentEndpoint === "attendance" ? "active" : ""}`}
-              onClick={() => setCurrentEndpoint("attendance")}
-              data-testid="btn-attendance"
-            >
-              Attendance
-            </button>
-            <button 
-              className={`endpoint-btn ${currentEndpoint === "lunch" ? "active" : ""}`}
-              onClick={() => setCurrentEndpoint("lunch")}
-              data-testid="btn-lunch"
-            >
-              Lunch
-            </button>
+          <div className="scan-mode-hint" data-testid="scan-mode-hint">
+            CS/NCS = Attendance | CSL/NCSL = Lunch
           </div>
           <div className="scan-counter" data-testid="text-scan-count">
             <span className="counter-number">{scanCount}</span>

@@ -59,6 +59,17 @@
   flex-wrap: wrap;
 }
 
+.scan-mode-hint {
+  font-size: 11px;
+  color: var(--s-text-dim);
+  background: var(--s-surface-2);
+  border: 1px solid var(--s-border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
 .endpoint-selector {
   display: flex;
   gap: 2px;
@@ -582,6 +593,11 @@
     width: 100%;
     justify-content: space-between;
   }
+
+  .scan-mode-hint {
+    font-size: 10px;
+    padding: 5px 8px;
+  }
   
   .header-title { 
     font-size: 14px; 
@@ -729,4 +745,3 @@
 .debug-overlay button:hover {
   background: #444;
 }
-
