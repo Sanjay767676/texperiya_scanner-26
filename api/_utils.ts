@@ -1,4 +1,4 @@
-import axios, { AxiosError } from "axios";
+import axios from "axios";
 
 const DEFAULT_TEXPERIA_API_BASE_URL =
   "https://texperia-backend-anbub8brccgzfzd9.southindia-01.azurewebsites.net";
@@ -36,7 +36,7 @@ export async function proxyScan(endpoint: "/api/scan" | "/api/lunch", token: str
     });
     return { statusCode: response.status, body: response.data };
   } catch (error) {
-    const upstreamError = error as AxiosError;
+    const upstreamError = error as any;
     const statusCode = upstreamError.response?.status ?? 502;
     const body =
       upstreamError.response?.data ||
@@ -54,4 +54,3 @@ export function healthPayload() {
     upstreamBaseUrl: baseURL,
   };
 }
-
