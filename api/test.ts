@@ -6,10 +6,7 @@ export default async function handler(req: any, res: any) {
     
     try {
       if (process.env.DATABASE_URL) {
-        const [{ db, users }, { eq }] = await Promise.all([
-          import("../server/db"),
-          import("drizzle-orm"),
-        ]);
+        const { db, users } = await import("./_db");
         
         // Test a simple query
         const testQuery = await db.select().from(users).limit(1);

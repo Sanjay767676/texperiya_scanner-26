@@ -28,7 +28,7 @@ export default async function handler(req: any, res: any) {
 
     try {
       const [{ db, users }, { eq }, bcryptModule] = await Promise.all([
-        import("../../server/db"),
+        import("../_db"),
         import("drizzle-orm"),
         import("bcrypt"),
       ]);
