@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import axios, { AxiosError } from "axios";
+import { authRouter, requireAuth } from "./auth";
 
 const DEFAULT_TEXPERIA_API_BASE_URL =
   "https://texperia-backend-anbub8brccgzfzd9.southindia-01.azurewebsites.net";
@@ -65,6 +66,9 @@ export async function registerRoutes(
 
   console.log("[Server] Production mode - serving static files only");
   
+  // Register authentication routes
+  app.use("/api/auth", authRouter);
+  
   // Health check endpoint for monitoring
   app.get("/health", (_req, res) => {
     res.json({ 
@@ -83,7 +87,7 @@ export async function registerRoutes(
     });
   });
 
-  app.post("/api/scan", async (req, res) => {
+  app.post("/api/scan", requireAuth, async (req, res) => {
     const token = req.body?.token;
     if (typeof token !== "string") {
       return res.status(400).json({ message: "Invalid token format" });
@@ -92,7 +96,7 @@ export async function registerRoutes(
     return res.status(result.statusCode).json(result.body);
   });
 
-  app.post("/api/lunch", async (req, res) => {
+  app.post("/api/lunch", requireAuth, async (req, res) => {
     const token = req.body?.token;
     if (typeof token !== "string") {
       return res.status(400).json({ message: "Invalid token format" });
