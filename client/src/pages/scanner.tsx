@@ -14,6 +14,7 @@ import "./scanner.css";
 
 type ScanStatus = "scanning" | "processing" | "success" | "already_scanned" | "invalid" | "error" | "camera_error";
 type EndpointType = ScannerMode;
+type CameraFacingMode = "environment" | "user";
 
 interface ScanResult {
   status: ScanStatus;
@@ -94,6 +95,9 @@ export default function ScannerPage() {
   const [lastResponse, setLastResponse] = useState<any>(null);
   const [lastLatency, setLastLatency] = useState<number>(0);
   const [cameraPermissionGranted, setCameraPermissionGranted] = useState<boolean>(false);
+  const [availableCameras, setAvailableCameras] = useState<MediaDeviceInfo[]>([]);
+  const [selectedCameraId, setSelectedCameraId] = useState<string | null>(null);
+  const [preferredFacingMode, setPreferredFacingMode] = useState<CameraFacingMode>("environment");
   
   const { toast } = useToast();
 
@@ -111,32 +115,66 @@ export default function ScannerPage() {
     setBackendStatus(healthy ? "connected" : "unreachable");
   }, []);
 
-  const checkCameraPermission = useCallback(async () => {
+  const refreshAvailableCameras = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      setAvailableCameras([]);
+      return [] as MediaDeviceInfo[];
+    }
+
     try {
-      // Check if camera permission is already granted
-      const permission = await navigator.permissions.query({ name: 'camera' as PermissionName });
-      
-      if (permission.state === 'granted') {
-        setCameraPermissionGranted(true);
-        setScanResult({ status: "scanning" });
-        return true;
-      } else if (permission.state === 'denied') {
-        setScanResult({ 
-          status: "camera_error", 
-          message: "Camera permission denied. Please enable in browser settings." 
-        });
-        return false;
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoInputs = devices.filter((device) => device.kind === "videoinput");
+
+      setAvailableCameras(videoInputs);
+      setSelectedCameraId((currentCameraId) => {
+        if (currentCameraId && videoInputs.some((device) => device.deviceId === currentCameraId)) {
+          return currentCameraId;
+        }
+
+        const preferredDevice = videoInputs.find((device) =>
+          /back|rear|environment|world/i.test(device.label),
+        );
+
+        return preferredDevice?.deviceId ?? videoInputs[0]?.deviceId ?? null;
+      });
+
+      return videoInputs;
+    } catch (err) {
+      console.warn("[Scanner] Unable to enumerate cameras:", err);
+      setAvailableCameras([]);
+      return [] as MediaDeviceInfo[];
+    }
+  }, []);
+
+  const checkCameraPermission = useCallback(async (requestedFacingMode: CameraFacingMode = preferredFacingMode) => {
+    try {
+      if (navigator.permissions?.query) {
+        const permission = await navigator.permissions.query({ name: "camera" as PermissionName });
+
+        if (permission.state === "granted") {
+          setCameraPermissionGranted(true);
+          setScanResult({ status: "scanning" });
+          await refreshAvailableCameras();
+          return true;
+        }
+
+        if (permission.state === "denied") {
+          setScanResult({ 
+            status: "camera_error", 
+            message: "Camera permission denied. Please enable in browser settings." 
+          });
+          return false;
+        }
       }
       
-      // Try to request permission by accessing camera
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: { facingMode: "environment" } 
+          video: { facingMode: requestedFacingMode } 
         });
-        // Stop the stream immediately, we just needed to check permission
         stream.getTracks().forEach(track => track.stop());
         setCameraPermissionGranted(true);
         setScanResult({ status: "scanning" });
+        await refreshAvailableCameras();
         return true;
       } catch (mediaErr) {
         setScanResult({ 
@@ -150,7 +188,7 @@ export default function ScannerPage() {
       setScanResult({ status: "camera_error", message: "Requesting camera permission..." });
       return false;
     }
-  }, []);
+  }, [preferredFacingMode, refreshAvailableCameras]);
 
   const resetScanner = useCallback(() => {
     if (!mountedRef.current) return;
@@ -206,6 +244,43 @@ export default function ScannerPage() {
     }
   }, []);
 
+  const handleSwitchCamera = useCallback(async () => {
+    if (!cameraPermissionGranted) {
+      const granted = await checkCameraPermission();
+      if (!granted) return;
+    }
+
+    isProcessingRef.current = false;
+    lastScannedRef.current = "";
+    lastScanTimeRef.current = 0;
+    setScanResult({ status: "scanning" });
+
+    if (availableCameras.length > 1) {
+      setSelectedCameraId((currentCameraId) => {
+        const currentIndex = availableCameras.findIndex((device) => device.deviceId === currentCameraId);
+        const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % availableCameras.length : 0;
+        return availableCameras[nextIndex]?.deviceId ?? currentCameraId;
+      });
+      return;
+    }
+
+    const nextFacingMode = preferredFacingMode === "environment" ? "user" : "environment";
+    setPreferredFacingMode(nextFacingMode);
+    await refreshAvailableCameras();
+  }, [availableCameras, cameraPermissionGranted, checkCameraPermission, preferredFacingMode, refreshAvailableCameras]);
+
+  const scannerConstraints: MediaTrackConstraints = {
+    ...(selectedCameraId ? { deviceId: selectedCameraId } : { facingMode: preferredFacingMode }),
+    width: { ideal: 1280 },
+    height: { ideal: 720 },
+  };
+
+  const activeCameraLabel = selectedCameraId
+    ? availableCameras.find((device) => device.deviceId === selectedCameraId)?.label || "Camera"
+    : preferredFacingMode === "environment"
+      ? "Rear camera"
+      : "Front camera";
+
   useEffect(() => {
     mountedRef.current = true;
     
@@ -226,6 +301,20 @@ export default function ScannerPage() {
       if (retryIntervalRef.current) clearInterval(retryIntervalRef.current);
     };
   }, [processOfflineQueue, checkHealth, checkCameraPermission]);
+
+  useEffect(() => {
+    if (!cameraPermissionGranted || !navigator.mediaDevices?.addEventListener) return;
+
+    const handleDeviceChange = () => {
+      void refreshAvailableCameras();
+    };
+
+    navigator.mediaDevices.addEventListener("devicechange", handleDeviceChange);
+
+    return () => {
+      navigator.mediaDevices.removeEventListener("devicechange", handleDeviceChange);
+    };
+  }, [cameraPermissionGranted, refreshAvailableCameras]);
 
   const processResponse = useCallback((result: ScanUiResult, requestMode: EndpointType) => {
     setLastResponse(result);
@@ -431,11 +520,7 @@ export default function ScannerPage() {
               }}
               paused={false}
               scanDelay={100}
-              constraints={{ 
-                facingMode: "environment",
-                width: { ideal: 1280 },  
-                height: { ideal: 720 }
-              }}
+              constraints={scannerConstraints}
               formats={["qr_code"]}
               components={{ 
                 finder: false,
@@ -501,6 +586,28 @@ export default function ScannerPage() {
               <button onClick={() => setDebugMode(false)}>Close</button>
             </div>
           )}
+        </div>
+
+        <div className="scanner-actions">
+          <button
+            type="button"
+            className="camera-switch-btn"
+            onClick={() => {
+              void handleSwitchCamera();
+            }}
+            disabled={!cameraPermissionGranted}
+            data-testid="switch-camera-btn"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M4 7h3l2-2h6l2 2h3v10h-3l-2 2H9l-2-2H4z" />
+              <path d="M9 10a4 4 0 0 1 6.7-1.9" />
+              <path d="M15 14a4 4 0 0 1-6.7 1.9" />
+              <path d="m15.7 8.6.1 2.7-2.7.1" />
+              <path d="m8.3 15.4-.1-2.7 2.7-.1" />
+            </svg>
+            <span>Switch Camera</span>
+            <span className="camera-switch-label">{activeCameraLabel}</span>
+          </button>
         </div>
 
         <div className={`status-bar ${statusClass}`} data-testid="status-overlay">
